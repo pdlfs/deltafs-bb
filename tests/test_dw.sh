@@ -9,8 +9,9 @@ sync
 #DW stage_out type=file destination=/tmp/random_clone.txt source=$DW_JOB_STRIPED/random.txt
 sync
 CLONED_CHECKSUM=$(sha1sum /tmp/random_clone.txt) # calculate checksum of cloned file for verification
-if [ "$CHECKSUM" != "$CLONED_CHECKSUM" ]; then
-  echo "DataWarp basic integrity check failed!"
-else
+if [ "$CHECKSUM" = "$CLONED_CHECKSUM" ];
+then
   echo "DataWarp basic integrity check passed!"
+else
+  echo "DataWarp basic integrity check failed!"
 fi
