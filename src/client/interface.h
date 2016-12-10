@@ -7,31 +7,43 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include <iostream.h>
-
 namespace pdlfs {
 namespace bb {
+
+typedef uint64_t oid_t;
 
 class Client
 {
   public:
-    virtual ~DeltaFSBBClientInterface() {}
+    virtual ~Client() {}
 
-    /* Initialize BB client with required number of parallel logs. */
-    virtual int bb_init(int num_parallel_logs);
+    /* Initialize BB client. */
+    virtual int init();
 
     /*
      * Open a BB client file for write. Flags can be O_TRICKLE, O_BULK.
      * O_TRICKLE performs RPC to BB server on every write.
      * O_BULK performs RPC to server on close.
      */
-    virtual int bb_open(char *path, int flag);
+    virtual oid_t open(char *path, int flag);
 
     /* Write to an open BB client file. */
-    virtual int bb_write(int fd, const void *buf, size_t len);
+    virtual size_t write(oid_t id, const void *buf, off_t offset, size_t len);
+
+    /* Read from an open BB client file. */
+    virtual size_t read(oid_t id, const void *buf, off_t offset, size_t len);
+
+    /* Append to an open BB client file. */
+    virtual size_t append(oid_t id, const void *buf, size_t len);
+
+    /* Destroy a BB object. */
+    virtual int destory(char *path);
 
     /* Close a BB client file. */
-    virtual int bb_close(int fd);
+    virtual int close(oid_t);
+
+    /* Sync a BB file to underlying PFS */
+    virtual int sync(oid_t);
 };
 
 }

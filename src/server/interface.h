@@ -7,30 +7,46 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include <iostream>
-
 namespace pdlfs {
 namespace bb {
 
 class Server
 {
   public:
-    virtual ~ServerInterface() {}
+    virtual ~Server() {}
 
     /* Initialize BB server with the compute node fan in. */
-    virtual int bb_init();
+    virtual int init(int fan_in);
 
     /* Handler for the RPC on the BB server */
-    virtual int bb_listen(char *path, int flag);
+    virtual int listen(void *args);
 
-    /* Write to a particular stream ID. */
-    virtual int bb_write(int s_id, const void *buf, size_t len);
+    /* Make a BB object */
+    virtual oid_t mkobj(void *args);
 
-    /* Commit a particular steam ID to persistent storage. */
-    virtual int bb_sync(int s_id);
+    /* Write to a BB object */
+    virtual size_t write(oid_t id, void *buf, off_t offset size_t len);
 
-    /* Close a particluar stream ID and remove all its state. */
-    virtual int bb_destroy(int s_id);
+    /* Read from a BB object */
+    virtual size_t read(oid_t id, void *buf, off_t offset, size_t len);
+
+    /* Sync a BB object to underlying PFS */
+    virtual int sync(oid_t id);
+
+    /* Evict an object from BB to underlying PFS and free space */
+    virtual int evict(oid_t id);
+
+    /* Construct underlying PFS object by stitching BB object fragments */
+    virtual pfsid_t binpack(oid_t *lst_id, binpacking_policy_t policy);
+
+    /* Stage in file from PFS to BB */
+    virtual oid_t *lst_id stage_in(pfsid_t pid, stage_in_policy_t policy);
+
+    /* Stage out file from BB to PFS */
+    virtual int stage_out(pfsid_t pid, stage_out_policy_t policy);
+
+    /* Destroy BB server instance. */
+    virtual int destroy();
 };
 
 } // namespace bb
