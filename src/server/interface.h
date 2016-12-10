@@ -7,8 +7,17 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
+#include <cstdint>
+#include <cstdio>
+
 namespace pdlfs {
 namespace bb {
+
+typedef uint64_t oid_t;
+typedef uint64_t pfsid_t;
+enum binpacking_policy { GREEDY };
+enum stage_out_policy { SEQ_OUT, PAR_OUT };
+enum stage_in_policy { SEQ_IN, PAR_IN };
 
 class Server
 {
@@ -25,7 +34,7 @@ class Server
     virtual oid_t mkobj(void *args);
 
     /* Write to a BB object */
-    virtual size_t write(oid_t id, void *buf, off_t offset size_t len);
+    virtual size_t write(oid_t id, void *buf, off_t offset, size_t len);
 
     /* Read from a BB object */
     virtual size_t read(oid_t id, void *buf, off_t offset, size_t len);
@@ -37,13 +46,13 @@ class Server
     virtual int evict(oid_t id);
 
     /* Construct underlying PFS object by stitching BB object fragments */
-    virtual pfsid_t binpack(oid_t *lst_id, binpacking_policy_t policy);
+    virtual pfsid_t binpack(oid_t *lst_id, binpacking_policy policy);
 
     /* Stage in file from PFS to BB */
-    virtual oid_t *lst_id stage_in(pfsid_t pid, stage_in_policy_t policy);
+    virtual oid_t *stage_in(pfsid_t pid, stage_in_policy policy);
 
     /* Stage out file from BB to PFS */
-    virtual int stage_out(pfsid_t pid, stage_out_policy_t policy);
+    virtual int stage_out(pfsid_t pid, stage_out_policy policy);
 
     /* Destroy BB server instance. */
     virtual int destroy();

@@ -7,6 +7,9 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
+#include <cstdint>
+#include <cstdio>
+
 namespace pdlfs {
 namespace bb {
 
