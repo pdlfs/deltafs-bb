@@ -16,7 +16,7 @@
 #include <string.h>
 #include <sstream>
 #include <fstream>
-#include "src/server/buddyserver_new.h"
+#include "src/server/buddyserver.h"
 //#include "src/server/interface.h"
 
 namespace pdlfs {
@@ -25,9 +25,9 @@ namespace bb {
 class BuddyServer//: public Server
 {
   private:
-    std::map<oid_t, bbos_obj_t *> *object_map;
+    std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
-    oid_t running_oid;
+    //oid_t running_oid;
     size_t PFS_CHUNK_SIZE;
     size_t OBJ_CHUNK_SIZE;
     size_t dirty_bbos_size;
@@ -41,11 +41,6 @@ class BuddyServer//: public Server
       }
       new_chunk->size = 0;
       return new_chunk;
-    }
-
-    void add_chunk(oid_t id, chunk_info_t *chunk) {
-      bbos_obj_t *obj = object_map->find(id)->second;
-      obj->lst_chunks->push_back(chunk);
     }
 
     size_t add_data(chunk_info_t *chunk, void *buf, size_t len) {
@@ -63,7 +58,7 @@ class BuddyServer//: public Server
     std::list<binpack_segment_t> get_objects(binpacking_policy policy) {
       std::list<binpack_segment_t> segments;
       //FIXME: hardcoded to all objects
-      std::map<oid_t, bbos_obj_t *>::iterator it_map = object_map->begin();
+      std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
       while(it_map != object_map->end()) {
         binpack_segment_t seg;
         seg.obj = (*it_map).second;
@@ -75,7 +70,7 @@ class BuddyServer//: public Server
       return segments;
     }
 
-    int build_container(char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
+    int build_container(const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
       //TODO: get container name from a microservice
       FILE *fp = fopen(c_name, "w+");
       assert(fp != NULL);
@@ -134,7 +129,7 @@ class BuddyServer//: public Server
      * Build the global manifest file used to bootstrap BBOS from all the
      * containers and their contents.
      */
-    void build_global_manifest(char *manifest_name) {
+    void build_global_manifest(const char *manifest_name) {
       // we have to iterate through the object container map and write it to
       // a separate file.
       FILE *fp = fopen(manifest_name, "w+");
@@ -216,17 +211,17 @@ class BuddyServer//: public Server
       }
     }
 
-    oid_t create_bbos_cache_entry(char *name) {
+    bbos_obj_t *create_bbos_cache_entry(const char *name) {
       bbos_obj_t *obj = new bbos_obj_t;
-      obj->id = running_oid++;
+      //obj->id = running_oid++;
       obj->lst_chunks = new std::list<chunk_info_t *>;
       obj->last_chunk_flushed = 0;
       obj->dirty_size = 0;
       obj->size = 0;
       sprintf(obj->name, "%s", name);
-      std::map<oid_t, bbos_obj_t*>::iterator it_map = object_map->begin();
-      object_map->insert(it_map, std::pair<oid_t, bbos_obj_t*>(obj->id, obj));
-      return obj->id;
+      std::map<std::string, bbos_obj_t*>::iterator it_map = object_map->begin();
+      object_map->insert(it_map, std::pair<std::string, bbos_obj_t*>(std::string(obj->name), obj));
+      return obj;
     }
 
     void destroy_data_structures() {
@@ -241,7 +236,7 @@ class BuddyServer//: public Server
         it_obj_cont_map++;
       }
       delete object_container_map;
-      std::map<oid_t, bbos_obj_t *>::iterator it_obj_map = object_map->begin();
+      std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->begin();
       while(it_obj_map != object_map->end()) {
         std::list<chunk_info_t *>::iterator it_chunks = it_obj_map->second->lst_chunks->begin();
         while(it_chunks != it_obj_map->second->lst_chunks->end()) {
@@ -256,10 +251,10 @@ class BuddyServer//: public Server
 
   public:
     BuddyServer(size_t pfs_chunk_size=8388608, size_t obj_chunk_size=2097152) {
-      running_oid = 0;
+      //running_oid = 0;
       OBJ_CHUNK_SIZE = obj_chunk_size;
       PFS_CHUNK_SIZE = pfs_chunk_size;
-      object_map = new std::map<oid_t, bbos_obj_t *>;
+      object_map = new std::map<std::string, bbos_obj_t *>;
       object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
       dirty_bbos_size = 0;
     }
@@ -268,9 +263,12 @@ class BuddyServer//: public Server
       destroy_data_structures();
     }
 
-    oid_t mkobj(char *name) {
+    int mkobj(char *name) {
       // Initialize an in-memory object
-      return create_bbos_cache_entry(name);
+      if(create_bbos_cache_entry(name) == NULL) {
+        return -BB_ERROBJ;
+      }
+      return 0;
     }
 
     //int init(int fan_in);
@@ -280,32 +278,36 @@ class BuddyServer//: public Server
     /* Write to a BB object */
     //virtual size_t write(oid_t id, void *buf, off_t offset, size_t len);
 
-    /* Open a BBOS object */
-    oid_t open(char *name) {
-      oid_t id = create_bbos_cache_entry(name);
-      std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(name));
-      assert(it_map != object_container_map->end());
-      std::list<container_segment_t *> *lst_segments = it_map->second;
-      std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
-      bbos_obj_t *obj = object_map->find(id)->second;
-      while(it_segs != it_map->second->end()) {
-        container_segment_t *c_seg = (*it_segs);
-        for(int i=c_seg->start_chunk; i<c_seg->end_chunk; i++) {
-          chunk_info_t *chunk = new chunk_info_t;
-          chunk->buf = NULL;
-          chunk->size = 0;
-          chunk->id = i;
-          obj->lst_chunks->push_back(chunk);
-          obj->size += OBJ_CHUNK_SIZE;
+
+    /* Get size of BB object */
+    size_t get_size(const char *name) {
+      std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->find(std::string(name));
+      if(it_obj_map == object_map->end()) {
+        std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(name));
+        assert(it_map != object_container_map->end());
+        bbos_obj_t *obj = create_bbos_cache_entry(name);
+        std::list<container_segment_t *> *lst_segments = it_map->second;
+        std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
+        while(it_segs != it_map->second->end()) {
+          container_segment_t *c_seg = (*it_segs);
+          for(int i=c_seg->start_chunk; i<c_seg->end_chunk; i++) {
+            chunk_info_t *chunk = new chunk_info_t;
+            chunk->buf = NULL;
+            chunk->size = 0;
+            chunk->id = i;
+            obj->lst_chunks->push_back(chunk);
+            obj->size += OBJ_CHUNK_SIZE;
+          }
+          it_segs++;
         }
-        it_segs++;
+        return obj->size;
       }
-      return id;
+      return it_obj_map->second->size;
     }
 
     /* Append to a BB object */
-    size_t append(oid_t id, void *buf, size_t len) {
-      bbos_obj_t *obj = object_map->find(id)->second;
+    size_t append(const char *name, void *buf, size_t len) {
+      bbos_obj_t *obj = object_map->find(std::string(name))->second;
       chunk_info_t *last_chunk = obj->lst_chunks->back();
       size_t data_added = 0;
       size_t data_size_for_chunk = 0;
@@ -316,7 +318,7 @@ class BuddyServer//: public Server
           next_chunk_id = last_chunk->id + 1;
         }
         chunk_info_t *chunk = make_chunk(next_chunk_id);
-        add_chunk(id, chunk);
+        obj->lst_chunks->push_back(chunk);
         last_chunk = obj->lst_chunks->back();
       }
       if(len <= (OBJ_CHUNK_SIZE - last_chunk->size)) {
@@ -332,8 +334,8 @@ class BuddyServer//: public Server
     }
 
     /* Read from a BB object */
-    size_t read(oid_t id, void *buf, off_t offset, size_t len) {
-      bbos_obj_t *obj = object_map->find(id)->second;
+    size_t read(const char *name, void *buf, off_t offset, size_t len) {
+      bbos_obj_t *obj = object_map->find(std::string(name))->second;
       if(offset >= obj->size) {
         return -BB_INVALID_READ;
       }
@@ -378,11 +380,8 @@ class BuddyServer//: public Server
     /* Sync a BB object to underlying PFS */
     //virtual int sync(oid_t id);
 
-    /* Evict an object from BB to underlying PFS and free space */
-    //virtual int evict(oid_t id);
-
     /* Construct underlying PFS object by stitching BB object fragments */
-    pfsid_t binpack(char *container_name, binpacking_policy policy) {
+    pfsid_t binpack(const char *container_name, binpacking_policy policy) {
       //TODO: to be called via a separate thread based on dirty_bbos_size threshold
       build_container(container_name, get_objects(policy));
     }
@@ -397,13 +396,13 @@ class BuddyServer//: public Server
     //virtual int destroy();
 
     /* Shutdown BB server instance */
-    int shutdown(char *manifest_name) {
+    int shutdown(const char *manifest_name) {
       build_global_manifest(manifest_name);
       return 0;
     }
 
     /* Bootstrap from given global manifest */
-    int bootstrap(char *manifest_name) {
+    int bootstrap(const char *manifest_name) {
       std::ifstream manifest(manifest_name);
       if(!manifest) {
         return -BB_ENOMANIFEST;

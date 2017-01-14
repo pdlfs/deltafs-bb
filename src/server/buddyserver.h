@@ -27,6 +27,7 @@ typedef uint32_t chunkid_t;
 #define BB_INVALID_READ 5
 #define BB_ENOMANIFEST 6
 #define BB_ENOCONTAINER 7
+#define BB_ERROBJ 8
 
 //#define PFS_CHUNK_SIZE 8388608
 //#define OBJ_CHUNK_SIZE 2097152
@@ -41,7 +42,7 @@ typedef struct {
 } chunk_info_t;
 
 typedef struct {
-  oid_t id;
+  //oid_t id;
   char name[PATH_LEN];
   size_t size;
   std::list<chunk_info_t *> *lst_chunks; // list of chunks in BBOS object
