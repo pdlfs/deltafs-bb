@@ -10,9 +10,14 @@
 #include <list>
 #include <map>
 //#include "src/server/interface.h"
+#include "../rpc/rpc_engine.h"
+// #include "../rpc/rpc.h"
 
 namespace pdlfs {
 namespace bb {
+
+#ifndef BBOS_RPC_SERVER_H
+#define BBOS_RPC_SERVER_H
 
 typedef uint64_t oid_t;
 typedef uint64_t pfsid_t;
@@ -62,6 +67,8 @@ typedef struct {
   chunkid_t end_chunk;
   off_t offset;
 } container_segment_t;
+
+#endif /* BBOS_RPC_SERVER_H */
 
 } // namespace bb
 } // namespace pdlfs

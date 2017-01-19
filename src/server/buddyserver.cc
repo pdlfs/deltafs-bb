@@ -16,11 +16,28 @@
 #include <string.h>
 #include <sstream>
 #include <fstream>
-#include "src/server/buddyserver.h"
+#include <unistd.h>
+#include <aio.h>
+#include <fcntl.h>
+#include "buddyserver.h"
 //#include "src/server/interface.h"
 
 namespace pdlfs {
 namespace bb {
+
+static size_t OBJ_CHUNK_SIZE;
+static size_t PFS_CHUNK_SIZE;
+
+/* struct used to carry state of overall operation across callbacks */
+struct my_rpc_state
+{
+    hg_size_t size;
+    void *buffer;
+    hg_bulk_t bulk_handle;
+    hg_handle_t handle;
+    struct aiocb acb;
+    my_rpc_in_t in;
+};
 
 class BuddyServer//: public Server
 {
@@ -28,9 +45,11 @@ class BuddyServer//: public Server
     std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
     //oid_t running_oid;
-    size_t PFS_CHUNK_SIZE;
-    size_t OBJ_CHUNK_SIZE;
+    // size_t PFS_CHUNK_SIZE;
+    // size_t OBJ_CHUNK_SIZE;
     size_t dirty_bbos_size;
+
+    pthread_t rpc_thread;
 
     chunk_info_t *make_chunk(chunkid_t id) {
       chunk_info_t *new_chunk = new chunk_info_t;
@@ -213,7 +232,6 @@ class BuddyServer//: public Server
 
     bbos_obj_t *create_bbos_cache_entry(const char *name) {
       bbos_obj_t *obj = new bbos_obj_t;
-      //obj->id = running_oid++;
       obj->lst_chunks = new std::list<chunk_info_t *>;
       obj->last_chunk_flushed = 0;
       obj->dirty_size = 0;
@@ -250,16 +268,23 @@ class BuddyServer//: public Server
     }
 
   public:
+    static pdlfs::bb::BuddyServer *instance;
+
     BuddyServer(size_t pfs_chunk_size=8388608, size_t obj_chunk_size=2097152) {
-      //running_oid = 0;
       OBJ_CHUNK_SIZE = obj_chunk_size;
       PFS_CHUNK_SIZE = pfs_chunk_size;
       object_map = new std::map<std::string, bbos_obj_t *>;
       object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
       dirty_bbos_size = 0;
+      // rpc_thread = pthread_create(&rpc_thread, NULL, bbos_listen, this);
+      // assert(rpc_thread != 0);
+      bs_obj = (void *) this;
+      // pdlfs::bb::obj_chunk_size = obj_chunk_size;
+      bbos_listen(NULL);
     }
 
     ~BuddyServer() {
+      pthread_exit(NULL);
       destroy_data_structures();
     }
 
@@ -270,14 +295,6 @@ class BuddyServer//: public Server
       }
       return 0;
     }
-
-    //int init(int fan_in);
-
-    //virtual int listen(void *args);
-
-    /* Write to a BB object */
-    //virtual size_t write(oid_t id, void *buf, off_t offset, size_t len);
-
 
     /* Get size of BB object */
     size_t get_size(const char *name) {
@@ -308,6 +325,7 @@ class BuddyServer//: public Server
     /* Append to a BB object */
     size_t append(const char *name, void *buf, size_t len) {
       bbos_obj_t *obj = object_map->find(std::string(name))->second;
+      assert(obj != NULL);
       chunk_info_t *last_chunk = obj->lst_chunks->back();
       size_t data_added = 0;
       size_t data_size_for_chunk = 0;
@@ -386,15 +404,6 @@ class BuddyServer//: public Server
       build_container(container_name, get_objects(policy));
     }
 
-    /* Stage in file from PFS to BB */
-    //virtual oid_t *stage_in(pfsid_t pid, stage_in_policy policy);
-
-    /* Stage out file from BB to PFS */
-    //virtual int stage_out(pfsid_t pid, stage_out_policy policy);
-
-    /* Destroy BB server instance. */
-    //virtual int destroy();
-
     /* Shutdown BB server instance */
     int shutdown(const char *manifest_name) {
       build_global_manifest(manifest_name);
@@ -414,6 +423,138 @@ class BuddyServer//: public Server
       }
     }
 };
+
+static void* bbos_listen(void *args) {
+  BuddyServer *bs = (BuddyServer *)args;
+  std::cout << "Starting RPC listener..." << std::endl;
+  hg_engine_init(NA_TRUE, "tcp://localhost:1234");
+
+  /* register RPC */
+  hg_class_t* hg_class;
+  hg_class = hg_engine_get_class();
+  MERCURY_REGISTER(hg_class, "my_rpc", my_rpc_in_t, my_rpc_out_t, my_rpc_handler);
+  /* this would really be something waiting for shutdown notification */
+  while(1) {
+    sleep(1);
+  }
+
+  hg_engine_finalize();
+}
+
+/* callback triggered upon completion of async write */
+static void my_rpc_handler_write_cb(union sigval sig)
+{
+    struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)sig.sival_ptr;
+    int ret;
+    my_rpc_out_t out;
+
+    ret = aio_error(&my_rpc_state_p->acb);
+    assert(ret == 0);
+    out.ret = 0;
+
+    /* NOTE: really this should be nonblocking */
+    close(my_rpc_state_p->acb.aio_fildes);
+
+    /* send ack to client */
+    /* NOTE: don't bother specifying a callback here for completion of sending
+     * response.  This is just a best effort response.
+     */
+    ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
+    assert(ret == HG_SUCCESS);
+    (void)ret;
+
+    HG_Bulk_free(my_rpc_state_p->bulk_handle);
+    HG_Destroy(my_rpc_state_p->handle);
+    free(my_rpc_state_p->buffer);
+    free(my_rpc_state_p);
+
+    return;
+}
+
+/* callback triggered upon completion of bulk transfer */
+static hg_return_t my_rpc_handler_bulk_cb(const struct hg_cb_info *info)
+{
+    struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)info->arg;
+    int ret;
+    // char filename[256];
+    BuddyServer *bs = (BuddyServer *) bs_obj;
+    char name[PATH_LEN];
+    size_t len = 0;
+    snprintf(name, PATH_LEN, "%s", (char*)my_rpc_state_p->buffer);
+    memcpy(&len, ((char*)my_rpc_state_p->buffer+PATH_LEN), sizeof(size_t));
+    /* send ack to client */
+    /* NOTE: don't bother specifying a callback here for completion of sending
+     * response.  This is just a best effort response.
+     */
+    my_rpc_out_t out;
+    switch((int)my_rpc_state_p->in.input_val) {
+      case 0: out.ret = bs->mkobj(name);
+                  break;
+
+      case 1: out.ret = bs->append(name, (void *)((char *)my_rpc_state_p->buffer + PATH_LEN + sizeof(size_t)), len);
+                  break;
+    }
+
+    // out.ret = 0;
+    ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
+    assert(ret == HG_SUCCESS);
+    (void)ret;
+
+    HG_Bulk_free(my_rpc_state_p->bulk_handle);
+    HG_Destroy(my_rpc_state_p->handle);
+    free(my_rpc_state_p->buffer);
+    free(my_rpc_state_p);
+
+    return((hg_return_t)0);
+}
+
+/* callback/handler triggered upon receipt of rpc request */
+static hg_return_t my_rpc_handler(hg_handle_t handle)
+{
+    int ret;
+    struct my_rpc_state *my_rpc_state_p;
+    struct hg_info *hgi;
+    int action = -1;
+    size_t len = 0;
+
+    /* set up state structure */
+    my_rpc_state_p = (pdlfs::bb::my_rpc_state*)malloc(sizeof(*my_rpc_state_p));
+    assert(my_rpc_state_p);
+
+    my_rpc_state_p->handle = handle;
+
+    /* decode input */
+    ret = HG_Get_input(handle, &my_rpc_state_p->in);
+    assert(ret == HG_SUCCESS);
+
+    /* get action to perform */
+    action = my_rpc_state_p->in.input_val;
+    my_rpc_state_p->size = PATH_LEN + sizeof(size_t);
+    switch (action) {
+      case 1: my_rpc_state_p->size = PATH_LEN + sizeof(size_t) + OBJ_CHUNK_SIZE;
+              //NOTE: this assumes that each append is going to be of a fixed size.
+              break;
+    }
+    // /* This includes allocating a target buffer for bulk transfer */
+    my_rpc_state_p->buffer = calloc(1, my_rpc_state_p->size);
+    assert(my_rpc_state_p->buffer);
+
+    /* register local target buffer for bulk access */
+    hgi = HG_Get_info(handle);
+    assert(hgi);
+    ret = HG_Bulk_create(hgi->hg_class, 1, &my_rpc_state_p->buffer,
+        &my_rpc_state_p->size, HG_BULK_WRITE_ONLY, &my_rpc_state_p->bulk_handle);
+    assert(ret == 0);
+    memcpy(&len, (void *)((char*)my_rpc_state_p->buffer + PATH_LEN), sizeof(size_t));
+
+    /* initiate bulk transfer from client to server */
+    ret = HG_Bulk_transfer(hgi->context, my_rpc_handler_bulk_cb,
+        my_rpc_state_p, HG_BULK_PULL, hgi->addr, my_rpc_state_p->in.bulk_handle, 0,
+        my_rpc_state_p->bulk_handle, 0, my_rpc_state_p->size, HG_OP_ID_IGNORE);
+    assert(ret == 0);
+    (void)ret;
+    return((hg_return_t)0);
+}
 
 } // namespace bb
 } // namespace pdlfs
