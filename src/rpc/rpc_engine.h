@@ -27,8 +27,9 @@ extern "C" {
 
 MERCURY_GEN_PROC(my_rpc_out_t, ((int32_t)(ret)))
 MERCURY_GEN_PROC(my_rpc_in_t,
-    ((int32_t)(input_val))\
-    ((hg_bulk_t)(bulk_handle)))
+    ((int32_t)(action))\
+    ((hg_bulk_t)(input_bulk_handle))\
+    ((hg_bulk_t)(output_bulk_handle)))
 
 hg_id_t my_rpc_register(void);
 static void* bbos_listen(void *args);

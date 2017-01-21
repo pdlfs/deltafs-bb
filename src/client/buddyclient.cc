@@ -32,16 +32,19 @@ static void run_my_rpc(int value);
 static hg_return_t lookup_cb(const struct hg_cb_info *callback_info);
 
 static int rpc_retval = 0;
+static void *rpc_retbuf = NULL;
 
 /* struct used to carry state of overall operation across callbacks */
 struct my_rpc_client_state
 {
-    // int value;
     hg_size_t size;
+    hg_size_t output_size;
     int action;
-    void* buffer;
     char name[PATH_LEN];
-    hg_bulk_t bulk_handle;
+    void *input;
+    void *output;
+    hg_bulk_t input_bulk_handle;
+    hg_bulk_t output_bulk_handle;
     hg_handle_t handle;
 };
 
@@ -50,6 +53,7 @@ struct operation_details {
   enum ACTION action;
   void *buf;
   size_t len;
+  off_t offset;
 };
 
 static void run_my_rpc(struct operation_details *op)
@@ -67,6 +71,7 @@ static hg_return_t lookup_cb(const struct hg_cb_info *callback_info)
     my_rpc_in_t in;
     struct hg_info *hgi;
     int ret;
+    size_t output_size;
     struct my_rpc_client_state *my_rpc_state_p;
 
     assert(callback_info->ret == 0);
@@ -75,19 +80,46 @@ static hg_return_t lookup_cb(const struct hg_cb_info *callback_info)
     my_rpc_state_p = (pdlfs::bb::my_rpc_client_state*) malloc(sizeof(*my_rpc_state_p));
     struct operation_details *op = (struct operation_details *) callback_info->arg;
     my_rpc_state_p->action = op->action;
-    my_rpc_state_p->size = PATH_LEN + op->len + sizeof(size_t);
-
-    /* This includes allocating a src buffer for bulk transfer */
-    my_rpc_state_p->buffer = calloc(1, op->len + PATH_LEN + sizeof(size_t));
-    assert(my_rpc_state_p->buffer);
-    snprintf((char*)my_rpc_state_p->buffer, PATH_LEN, "%s", op->name);
-    memcpy((void *)((char*)my_rpc_state_p->buffer + PATH_LEN), &op->len, sizeof(size_t));
+    snprintf(my_rpc_state_p->name, PATH_LEN, "%s", op->name);
+    my_rpc_state_p->output_size = op->len;
+    if(my_rpc_state_p->output_size == 0) {
+      my_rpc_state_p->output_size = 1;
+    }
     switch (my_rpc_state_p->action) {
-      case APPEND:  memcpy((void *)((char *)my_rpc_state_p->buffer + PATH_LEN + sizeof(size_t)), op->buf, op->len);
+
+      case MKOBJ: my_rpc_state_p->size = PATH_LEN;
+                  /* This includes allocating a src buffer for bulk transfer */
+                  my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+                  my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
+                  assert(my_rpc_state_p->input != NULL);
+                  assert(my_rpc_state_p->output != NULL);
+                  snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
+                  break;
+
+      case APPEND:  my_rpc_state_p->size = PATH_LEN + op->len + sizeof(size_t);
+                    /* This includes allocating a src buffer for bulk transfer */
+                    my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+                    my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
+                    assert(my_rpc_state_p->input != NULL);
+                    assert(my_rpc_state_p->output != NULL);
+                    snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
+                    memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN), &op->len, sizeof(size_t));
+                    memcpy((void *)((char *)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), op->buf, op->len);
                     free(op->buf);
-                    // printf("name = %s\n", (char *)my_rpc_state_p->buffer);
-                    // printf("len = %lu\n", *(size_t *)((char *)my_rpc_state_p->buffer + PATH_LEN));
-                    // printf("data = %s\n", ((char *)my_rpc_state_p->buffer + PATH_LEN + sizeof(size_t)));
+                    break;
+
+      case READ: my_rpc_state_p->size = PATH_LEN + sizeof(size_t) + sizeof(off_t);
+                 my_rpc_state_p->output_size += PATH_LEN + sizeof(size_t) + sizeof(off_t);
+                 /* This includes allocating a src buffer for bulk transfer */
+                 my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+                 my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
+                 assert(my_rpc_state_p->input != NULL);
+                 assert(my_rpc_state_p->output != NULL);
+                 snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
+                 memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN), &op->len, sizeof(size_t));
+                 memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), &op->offset, sizeof(off_t));
+                 free(op->buf);
+                 break;
     }
 
     free(op);
@@ -98,15 +130,19 @@ static hg_return_t lookup_cb(const struct hg_cb_info *callback_info)
     /* register buffer for rdma/bulk access by server */
     hgi = HG_Get_info(my_rpc_state_p->handle);
     assert(hgi);
-    ret = HG_Bulk_create(hgi->hg_class, 1, &my_rpc_state_p->buffer, &my_rpc_state_p->size,
-        HG_BULK_READ_ONLY, &in.bulk_handle);
-    my_rpc_state_p->bulk_handle = in.bulk_handle;
+    ret = HG_Bulk_create(hgi->hg_class, 1, &(my_rpc_state_p->input), &(my_rpc_state_p->size),
+        HG_BULK_READ_ONLY, &(in.input_bulk_handle));
+    my_rpc_state_p->input_bulk_handle = in.input_bulk_handle;
+    assert(ret == 0);
+
+    ret = HG_Bulk_create(hgi->hg_class, 1, &(my_rpc_state_p->output), &(my_rpc_state_p->output_size),
+        HG_BULK_READWRITE, &(in.output_bulk_handle));
     assert(ret == 0);
 
     /* Send rpc. Note that we are also transmitting the bulk handle in the
      * input struct.  It was set above.
      */
-    in.input_val = my_rpc_state_p->action;
+    in.action = my_rpc_state_p->action;
     ret = HG_Forward(my_rpc_state_p->handle, my_rpc_cb, my_rpc_state_p, &in);
     assert(ret == 0);
     (void)ret;
@@ -119,6 +155,7 @@ static hg_return_t my_rpc_cb(const struct hg_cb_info *info)
 {
     my_rpc_out_t out;
     int ret;
+    size_t out_length;
     struct my_rpc_client_state *my_rpc_state_p = (pdlfs::bb::my_rpc_client_state*)info->arg;
 
     assert(info->ret == HG_SUCCESS);
@@ -130,11 +167,18 @@ static hg_return_t my_rpc_cb(const struct hg_cb_info *info)
 
     rpc_retval = out.ret;
 
+    switch (my_rpc_state_p->action) {
+      case 2: memcpy(rpc_retbuf, my_rpc_state_p->output, rpc_retval);
+              break;
+    }
+
     /* clean up resources consumed by this rpc */
-    HG_Bulk_free(my_rpc_state_p->bulk_handle);
+    HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
+    HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
     HG_Free_output(info->info.forward.handle, &out);
     HG_Destroy(info->info.forward.handle);
-    free(my_rpc_state_p->buffer);
+    free(my_rpc_state_p->input);
+    free(my_rpc_state_p->output);
     free(my_rpc_state_p);
 
     /* signal to main() that we are done */
@@ -196,6 +240,26 @@ class BuddyClient//: public Client
       done--;
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) rpc_retval;
+      rpc_retval = 0;
+      return retval;
+    }
+
+    size_t read(const char *name, void *buf, off_t offset, size_t len) {
+      struct operation_details *op = new operation_details;
+      sprintf(op->name, "%s", name);
+      int retval;
+      rpc_retbuf = buf;
+      op->len = len;
+      op->offset = offset;
+      op->action = READ;
+      op->buf = NULL;
+      run_my_rpc(op);
+      pthread_mutex_lock(&done_mutex);
+      while(done < 1)
+        pthread_cond_wait(&done_cond, &done_mutex);
+      done--;
+      pthread_mutex_unlock(&done_mutex);
+      retval = (int) rpc_retval;
       rpc_retval = 0;
       return retval;
     }

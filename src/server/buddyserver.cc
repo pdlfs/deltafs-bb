@@ -32,10 +32,13 @@ static size_t PFS_CHUNK_SIZE;
 struct my_rpc_state
 {
     hg_size_t size;
-    void *buffer;
-    hg_bulk_t bulk_handle;
+    hg_size_t output_size;
+    void *input;
+    void *output;
+    hg_bulk_t input_bulk_handle;
+    hg_bulk_t output_bulk_handle;
     hg_handle_t handle;
-    struct aiocb acb;
+    size_t ret;
     my_rpc_in_t in;
 };
 
@@ -44,9 +47,6 @@ class BuddyServer//: public Server
   private:
     std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
-    //oid_t running_oid;
-    // size_t PFS_CHUNK_SIZE;
-    // size_t OBJ_CHUNK_SIZE;
     size_t dirty_bbos_size;
 
     pthread_t rpc_thread;
@@ -64,13 +64,15 @@ class BuddyServer//: public Server
 
     size_t add_data(chunk_info_t *chunk, void *buf, size_t len) {
       // Checking of whether data can fit into this chunk has to be done outside
-      assert(memcpy((char *)chunk->buf + chunk->size, buf, len) != NULL);
+      void *ptr = memcpy((void *)((char *)chunk->buf + chunk->size), buf, len);
+      assert(ptr != NULL);
       chunk->size += len;
       return len;
     }
 
     size_t get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len) {
-      assert(memcpy(buf, (char *)chunk->buf + offset, len) != NULL);
+      void *ptr = memcpy(buf, (void *)((char *)chunk->buf + offset), len);
+      assert(ptr != NULL);
       return len;
     }
 
@@ -93,7 +95,6 @@ class BuddyServer//: public Server
       //TODO: get container name from a microservice
       FILE *fp = fopen(c_name, "w+");
       assert(fp != NULL);
-
       binpack_segment_t b_obj;
       off_t c_offset = 0;
       std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
@@ -279,7 +280,6 @@ class BuddyServer//: public Server
       // rpc_thread = pthread_create(&rpc_thread, NULL, bbos_listen, this);
       // assert(rpc_thread != 0);
       bs_obj = (void *) this;
-      // pdlfs::bb::obj_chunk_size = obj_chunk_size;
       bbos_listen(NULL);
     }
 
@@ -354,6 +354,10 @@ class BuddyServer//: public Server
     /* Read from a BB object */
     size_t read(const char *name, void *buf, off_t offset, size_t len) {
       bbos_obj_t *obj = object_map->find(std::string(name))->second;
+      if(obj == NULL) {
+        printf("Object %s missing\n", name);
+      }
+      assert(obj != NULL);
       if(offset >= obj->size) {
         return -BB_INVALID_READ;
       }
@@ -433,6 +437,7 @@ static void* bbos_listen(void *args) {
   hg_class_t* hg_class;
   hg_class = hg_engine_get_class();
   MERCURY_REGISTER(hg_class, "my_rpc", my_rpc_in_t, my_rpc_out_t, my_rpc_handler);
+  // printf("rpc id = %lu\n", tmp);
   /* this would really be something waiting for shutdown notification */
   while(1) {
     sleep(1);
@@ -445,15 +450,14 @@ static void* bbos_listen(void *args) {
 static void my_rpc_handler_write_cb(union sigval sig)
 {
     struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)sig.sival_ptr;
-    int ret;
+    int ret = 0;
     my_rpc_out_t out;
 
-    ret = aio_error(&my_rpc_state_p->acb);
     assert(ret == 0);
     out.ret = 0;
 
     /* NOTE: really this should be nonblocking */
-    close(my_rpc_state_p->acb.aio_fildes);
+    // close(my_rpc_state_p->acb.aio_fildes);
 
     /* send ack to client */
     /* NOTE: don't bother specifying a callback here for completion of sending
@@ -463,12 +467,32 @@ static void my_rpc_handler_write_cb(union sigval sig)
     assert(ret == HG_SUCCESS);
     (void)ret;
 
-    HG_Bulk_free(my_rpc_state_p->bulk_handle);
+    HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
     HG_Destroy(my_rpc_state_p->handle);
-    free(my_rpc_state_p->buffer);
+    free(my_rpc_state_p->input);
     free(my_rpc_state_p);
 
     return;
+}
+
+static hg_return_t
+my_rpc_push_cb(const struct hg_cb_info *info) {
+  struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)info->arg;
+  hg_return_t ret = HG_SUCCESS;
+  my_rpc_out_t rpc_out;
+
+  /* Set output parameters to inform origin */
+  rpc_out.ret = my_rpc_state_p->ret;
+  HG_Respond(my_rpc_state_p->handle, NULL, NULL, &rpc_out);
+
+  /* Free bulk handles */
+  HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
+  HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
+  HG_Destroy(my_rpc_state_p->handle);
+  free(my_rpc_state_p->input);
+  free(my_rpc_state_p->output);
+  free(my_rpc_state_p);
+  return ret;
 }
 
 /* callback triggered upon completion of bulk transfer */
@@ -476,35 +500,61 @@ static hg_return_t my_rpc_handler_bulk_cb(const struct hg_cb_info *info)
 {
     struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)info->arg;
     int ret;
-    // char filename[256];
     BuddyServer *bs = (BuddyServer *) bs_obj;
     char name[PATH_LEN];
     size_t len = 0;
-    snprintf(name, PATH_LEN, "%s", (char*)my_rpc_state_p->buffer);
-    memcpy(&len, ((char*)my_rpc_state_p->buffer+PATH_LEN), sizeof(size_t));
+    off_t offset = 0;
+    snprintf(name, PATH_LEN, "%s", (char*)my_rpc_state_p->input);
     /* send ack to client */
     /* NOTE: don't bother specifying a callback here for completion of sending
      * response.  This is just a best effort response.
      */
     my_rpc_out_t out;
-    switch((int)my_rpc_state_p->in.input_val) {
+    switch((int)my_rpc_state_p->in.action) {
       case 0: out.ret = bs->mkobj(name);
-                  break;
+              ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
+              assert(ret == HG_SUCCESS);
+              (void)ret;
 
-      case 1: out.ret = bs->append(name, (void *)((char *)my_rpc_state_p->buffer + PATH_LEN + sizeof(size_t)), len);
+              HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
+              HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
+              HG_Destroy(my_rpc_state_p->handle);
+              free(my_rpc_state_p->input);
+              free(my_rpc_state_p->output);
+              free(my_rpc_state_p);
+                  break;
+      case 1: memcpy(&len, ((char*)my_rpc_state_p->input+PATH_LEN), sizeof(size_t));
+              out.ret = bs->append(name, (void *)((char *)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), len);
+              ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
+              assert(ret == HG_SUCCESS);
+              (void)ret;
+
+              HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
+              HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
+              HG_Destroy(my_rpc_state_p->handle);
+              free(my_rpc_state_p->input);
+              free(my_rpc_state_p->output);
+              free(my_rpc_state_p);
+                  break;
+      case 2:
+              // /* Get pointer to input buffer from local handle */
+              memcpy(&len, ((char*)my_rpc_state_p->input + PATH_LEN), sizeof(size_t));
+              memcpy(&offset, ((char*)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), sizeof(off_t));
+              my_rpc_state_p->output = (void *) calloc(1, len);
+              my_rpc_state_p->ret = bs->read(name, my_rpc_state_p->output, offset, len);
+
+              HG_Bulk_create(HG_Get_info(my_rpc_state_p->handle)->hg_class, 1,
+                &my_rpc_state_p->output, &len, HG_BULK_WRITE_ONLY,
+                &my_rpc_state_p->output_bulk_handle);
+
+              HG_Bulk_transfer(HG_Get_info(my_rpc_state_p->handle)->context,
+                my_rpc_push_cb, my_rpc_state_p,
+                HG_BULK_PUSH, HG_Get_info(my_rpc_state_p->handle)->addr,
+                my_rpc_state_p->in.output_bulk_handle, 0, /* origin */
+                my_rpc_state_p->output_bulk_handle, 0, /* local */
+                len, HG_OP_ID_IGNORE);
                   break;
     }
-
-    // out.ret = 0;
-    ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
-    assert(ret == HG_SUCCESS);
-    (void)ret;
-
-    HG_Bulk_free(my_rpc_state_p->bulk_handle);
-    HG_Destroy(my_rpc_state_p->handle);
-    free(my_rpc_state_p->buffer);
-    free(my_rpc_state_p);
-
     return((hg_return_t)0);
 }
 
@@ -515,7 +565,10 @@ static hg_return_t my_rpc_handler(hg_handle_t handle)
     struct my_rpc_state *my_rpc_state_p;
     struct hg_info *hgi;
     int action = -1;
-    size_t len = 0;
+    hg_bulk_op_t rpc_type = HG_BULK_PULL;
+    size_t input_size = 0;
+    size_t output_size = 0;
+    void *buffer = NULL;
 
     /* set up state structure */
     my_rpc_state_p = (pdlfs::bb::my_rpc_state*)malloc(sizeof(*my_rpc_state_p));
@@ -524,33 +577,49 @@ static hg_return_t my_rpc_handler(hg_handle_t handle)
     my_rpc_state_p->handle = handle;
 
     /* decode input */
-    ret = HG_Get_input(handle, &my_rpc_state_p->in);
+    ret = HG_Get_input(handle, &(my_rpc_state_p->in));
     assert(ret == HG_SUCCESS);
 
+    input_size = HG_Bulk_get_size(my_rpc_state_p->in.input_bulk_handle);
+    output_size = HG_Bulk_get_size(my_rpc_state_p->in.output_bulk_handle);
     /* get action to perform */
-    action = my_rpc_state_p->in.input_val;
-    my_rpc_state_p->size = PATH_LEN + sizeof(size_t);
+    action = my_rpc_state_p->in.action;
+    my_rpc_state_p->size = input_size;
     switch (action) {
-      case 1: my_rpc_state_p->size = PATH_LEN + sizeof(size_t) + OBJ_CHUNK_SIZE;
+      case 0: rpc_type = HG_BULK_PULL;
+              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+              assert(my_rpc_state_p->input);
+              my_rpc_state_p->output = calloc(1, output_size);
+              assert(my_rpc_state_p->output);
+              break;
+      case 1: rpc_type = HG_BULK_PULL;
+              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+              assert(my_rpc_state_p->input);
+              my_rpc_state_p->output = calloc(1, output_size);
+              assert(my_rpc_state_p->output);
+              //NOTE: this assumes that each append is going to be of a fixed size.
+              break;
+      case 2: rpc_type = HG_BULK_PULL;
+              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
+              assert(my_rpc_state_p->input);
+              my_rpc_state_p->output = calloc(1, output_size);
+              assert(my_rpc_state_p->output);
               //NOTE: this assumes that each append is going to be of a fixed size.
               break;
     }
-    // /* This includes allocating a target buffer for bulk transfer */
-    my_rpc_state_p->buffer = calloc(1, my_rpc_state_p->size);
-    assert(my_rpc_state_p->buffer);
 
-    /* register local target buffer for bulk access */
+    /* register local target input for bulk access */
     hgi = HG_Get_info(handle);
     assert(hgi);
-    ret = HG_Bulk_create(hgi->hg_class, 1, &my_rpc_state_p->buffer,
-        &my_rpc_state_p->size, HG_BULK_WRITE_ONLY, &my_rpc_state_p->bulk_handle);
+
+    ret = HG_Bulk_create(HG_Get_info(handle)->hg_class, 1, &(my_rpc_state_p->input), &(my_rpc_state_p->size),
+	    HG_BULK_WRITE_ONLY, &(my_rpc_state_p->input_bulk_handle));
     assert(ret == 0);
-    memcpy(&len, (void *)((char*)my_rpc_state_p->buffer + PATH_LEN), sizeof(size_t));
 
     /* initiate bulk transfer from client to server */
     ret = HG_Bulk_transfer(hgi->context, my_rpc_handler_bulk_cb,
-        my_rpc_state_p, HG_BULK_PULL, hgi->addr, my_rpc_state_p->in.bulk_handle, 0,
-        my_rpc_state_p->bulk_handle, 0, my_rpc_state_p->size, HG_OP_ID_IGNORE);
+        my_rpc_state_p, rpc_type, hgi->addr, my_rpc_state_p->in.input_bulk_handle, 0,
+        my_rpc_state_p->input_bulk_handle, 0, my_rpc_state_p->size, HG_OP_ID_IGNORE);
     assert(ret == 0);
     (void)ret;
     return((hg_return_t)0);
