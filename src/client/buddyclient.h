@@ -7,8 +7,15 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include "../rpc/rpc_engine.h"
-// #include "../rpc/rpc.h"
+#include <mercury.h>
+#include <mercury_bulk.h>
+#include <mercury_macros.h>
+#include <mercury_request.h>
+#include <mercury_hl.h>
+#include <mercury_hl_macros.h>
+#include <mercury_thread.h>
+#include <mercury_proc_string.h>
+#include <mercury_config.h>
 
 namespace pdlfs {
 namespace bb {
@@ -17,14 +24,22 @@ namespace bb {
 
 enum ACTION {MKOBJ, APPEND, READ};
 
-/* struct used to carry state of overall operation across callbacks */
-typedef struct {
-    int value;
-    hg_size_t size;
-    void* buffer;
-    hg_bulk_t bulk_handle;
-    hg_handle_t handle;
-} bbos_rpc_state_t;
+MERCURY_GEN_PROC(bbos_mkobj_in_t,
+    ((hg_const_string_t)(name)))
+MERCURY_GEN_PROC(bbos_mkobj_out_t,
+    ((hg_id_t)(status)))
+MERCURY_GEN_PROC(bbos_append_in_t,
+    ((hg_const_string_t)(name))\
+    ((hg_bulk_t)(bulk_handle)))
+MERCURY_GEN_PROC(bbos_append_out_t,
+    ((hg_size_t)(size)))
+MERCURY_GEN_PROC(bbos_read_in_t,
+    ((hg_const_string_t)(name))\
+    ((hg_size_t)(offset))\
+    ((hg_size_t)(size))\
+    ((hg_bulk_t)(bulk_handle)))
+MERCURY_GEN_PROC(bbos_read_out_t,
+    ((hg_size_t)(size)))
 
 } // namespace bb
 } // namespace pdlfs

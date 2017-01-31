@@ -19,37 +19,89 @@
 #include <unistd.h>
 #include <aio.h>
 #include <fcntl.h>
+#include <signal.h>
 #include "buddyserver.h"
-//#include "src/server/interface.h"
+// #include "pdlfs-common/env.h"
 
 namespace pdlfs {
 namespace bb {
 
+static void* binpacking_decorator(void *args);
+static void destructor_decorator(int);
+static hg_return_t bbos_mkobj_handler(hg_handle_t handle);
+static hg_return_t bbos_append_handler(hg_handle_t handle);
+static hg_return_t bbos_read_handler(hg_handle_t handle);
+
 static size_t OBJ_CHUNK_SIZE;
 static size_t PFS_CHUNK_SIZE;
+static bool BINPACKING_SHUTDOWN;
+static bool GLOBAL_RPC_SHUTDOWN;
+// static ThreadPool* pool_;
+// static Env* env_;
+static na_class_t *server_network_class;
+static hg_context_t *server_hg_context;
+static hg_class_t *server_hg_class;
+static hg_bool_t server_hg_progress_shutdown_flag;
+static hg_id_t server_mkobj_rpc_id;
+static hg_id_t server_append_rpc_id;
+static hg_id_t server_read_rpc_id;
 
-/* struct used to carry state of overall operation across callbacks */
-struct my_rpc_state
-{
-    hg_size_t size;
-    hg_size_t output_size;
-    void *input;
-    void *output;
-    hg_bulk_t input_bulk_handle;
-    hg_bulk_t output_bulk_handle;
-    hg_handle_t handle;
-    size_t ret;
-    my_rpc_in_t in;
+static void *bs_obj;
+
+struct bbos_append_cb {
+  void *buffer;
+  hg_bulk_t bulk_handle;
+  hg_handle_t handle;
+  hg_size_t size;
+  char name[PATH_LEN];
 };
 
-class BuddyServer//: public Server
+struct bbos_read_cb {
+  void *buffer;
+  hg_bulk_t bulk_handle;
+  hg_bulk_t remote_bulk_handle;
+  hg_handle_t handle;
+  char name[PATH_LEN];
+  off_t offset;
+  size_t size;
+};
+
+/* dedicated thread function to drive Mercury progress */
+static void* rpc_progress_fn(void* rpc_index)
+{
+    hg_return_t ret;
+    unsigned int actual_count;
+
+    while(!server_hg_progress_shutdown_flag && !GLOBAL_RPC_SHUTDOWN) {
+        do {
+            ret = HG_Trigger(server_hg_context, 0, 1, &actual_count);
+            // printf("in here\n");
+        } while((ret == HG_SUCCESS) && actual_count && !server_hg_progress_shutdown_flag);
+
+        if(!server_hg_progress_shutdown_flag)
+            HG_Progress(server_hg_context, 100);
+    }
+
+    return(NULL);
+}
+
+class BuddyServer
 {
   private:
     std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
     size_t dirty_bbos_size;
-
-    pthread_t rpc_thread;
+    size_t binpacking_threshold;
+    binpacking_policy_t binpacking_policy;
+    std::list<bbos_obj_t *> *lru_objects;
+    pthread_t binpacking_thread;
+    pthread_t progress_thread;
+    struct sigaction sa;
+    size_t OBJECT_DIRTY_THRESHOLD;
+    size_t CONTAINER_SIZE;
+    pthread_mutex_t bbos_mutex;
+    char output_manifest[PATH_LEN];
+    int fan_in;
 
     chunk_info_t *make_chunk(chunkid_t id) {
       chunk_info_t *new_chunk = new chunk_info_t;
@@ -76,7 +128,7 @@ class BuddyServer//: public Server
       return len;
     }
 
-    std::list<binpack_segment_t> get_objects(binpacking_policy policy) {
+    std::list<binpack_segment_t> all_binpacking_policy() {
       std::list<binpack_segment_t> segments;
       //FIXME: hardcoded to all objects
       std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
@@ -91,58 +143,30 @@ class BuddyServer//: public Server
       return segments;
     }
 
-    int build_container(const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
-      //TODO: get container name from a microservice
-      FILE *fp = fopen(c_name, "w+");
-      assert(fp != NULL);
-      binpack_segment_t b_obj;
-      off_t c_offset = 0;
-      std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
-      fprintf(fp, "%lu\n", lst_binpack_segments.size());
-      while(it_bpack != lst_binpack_segments.end()) {
-        b_obj = *it_bpack;
-        it_bpack++;
-        fprintf(fp, "%s:%u:%u:%lu\n", b_obj.obj->name, b_obj.start_chunk, b_obj.end_chunk, c_offset);
-        c_offset += (OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
-      }
-
-      it_bpack = lst_binpack_segments.begin();
-      c_offset = 0;
-      while(it_bpack != lst_binpack_segments.end()) {
-        b_obj = *it_bpack;
-        std::list<chunk_info_t *>::iterator it_chunks = b_obj.obj->lst_chunks->begin();
-        while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.start_chunk) {
-          it_chunks++;
-        }
-        while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
-          //FIXME: write to DW in PFS_CHUNK_SIZE
-          fwrite((*it_chunks)->buf, sizeof(char), OBJ_CHUNK_SIZE, fp);
-          b_obj.obj->dirty_size -= OBJ_CHUNK_SIZE;
-          dirty_bbos_size -= OBJ_CHUNK_SIZE;
-          it_chunks++;
-        }
-
-        // populate the object_container_map
-        container_segment_t *c_seg = new container_segment_t;
-        strcpy(c_seg->container_name, c_name);
-        c_seg->start_chunk = b_obj.start_chunk;
-        c_seg->end_chunk = b_obj.end_chunk;
-        c_seg->offset = c_offset;
-        c_offset += (OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
-        std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(b_obj.obj->name));
-        if(it_map != object_container_map->end()) {
-          // entry already present in global manifest. Just add new segments.
-          it_map->second->push_back(c_seg);
+    std::list<binpack_segment_t> rr_with_cursor_binpacking_policy() {
+      std::list<binpack_segment_t> segments;
+      chunkid_t num_chunks = CONTAINER_SIZE / OBJ_CHUNK_SIZE;
+      while(num_chunks > 0) {
+        bbos_obj_t *obj = lru_objects->front();
+        lru_objects->pop_front();
+        binpack_segment_t seg;
+        seg.obj = obj;
+        seg.start_chunk = obj->cursor;
+        if((obj->lst_chunks->size() - seg.start_chunk) > num_chunks) {
+          seg.end_chunk += num_chunks;
+          obj->cursor += num_chunks;
         } else {
-          std::string bbos_name(b_obj.obj->name);
-          std::list<container_segment_t *> *lst_segments = new std::list<container_segment_t *>;
-          lst_segments->push_back(c_seg);
-          object_container_map->insert(it_map, std::pair<std::string, std::list<container_segment_t *> *>(bbos_name, lst_segments));
+          seg.end_chunk = obj->lst_chunks->size();
+          obj->cursor = obj->lst_chunks->size();
         }
-        it_bpack++;
+        obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * OBJ_CHUNK_SIZE;
+        if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
+          lru_objects->push_back(obj);
+        }
+        segments.push_back(seg);
+        num_chunks -= (seg.end_chunk - seg.start_chunk);
       }
-      fclose(fp);
-      return 0;
+      return segments;
     }
 
     /*
@@ -237,13 +261,86 @@ class BuddyServer//: public Server
       obj->last_chunk_flushed = 0;
       obj->dirty_size = 0;
       obj->size = 0;
+      obj->cursor = 0;
+      pthread_mutex_init(&obj->mutex, NULL);
+      pthread_mutex_lock(&obj->mutex);
       sprintf(obj->name, "%s", name);
       std::map<std::string, bbos_obj_t*>::iterator it_map = object_map->begin();
       object_map->insert(it_map, std::pair<std::string, bbos_obj_t*>(std::string(obj->name), obj));
       return obj;
     }
 
-    void destroy_data_structures() {
+  public:
+    BuddyServer(const char *output_manifest_file, // final manifest location
+                size_t pfs_chunk_size=8388608, // 8 MB output (DW) chunk size
+                size_t obj_chunk_size=2097152, // 2 MB input chunk size
+                int fan_in=4, // default 4 threads
+                size_t threshold=53687091200, // 50 GB
+                binpacking_policy_t policy=ALL, // default policy is all objs
+                size_t obj_dirty_threshold=10737418240, // dirty threshold
+                size_t container_size=53687091200, // container size on PFS
+                const char *input_manifest_file = NULL // bootstrap from manifest
+               ) {
+      /* signal handling to capture ctrl + c */
+      memset( &sa, 0, sizeof(sa) );
+      sa.sa_handler = destructor_decorator;
+      sigfillset(&sa.sa_mask);
+      sigaction(SIGINT, &sa, NULL);
+
+      strncpy(this->output_manifest, output_manifest_file, PATH_LEN);
+
+      OBJ_CHUNK_SIZE = obj_chunk_size;
+      PFS_CHUNK_SIZE = pfs_chunk_size;
+      OBJECT_DIRTY_THRESHOLD = obj_dirty_threshold;
+      CONTAINER_SIZE = container_size;
+      binpacking_policy = policy;
+      object_map = new std::map<std::string, bbos_obj_t *>;
+      object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
+      dirty_bbos_size = 0;
+      bs_obj = (void *) this;
+      binpacking_threshold = threshold;
+      lru_objects = new std::list<bbos_obj_t *>;
+
+      pthread_mutex_init(&bbos_mutex, NULL);
+      if(input_manifest_file != NULL) {
+        std::ifstream manifest(input_manifest_file);
+        if(!manifest) {
+          exit(BB_ENOMANIFEST);
+        }
+        char container_name[PATH_LEN];
+        while(manifest >> container_name) {
+          build_object_container_map(container_name);
+        }
+      }
+
+      server_network_class = NA_Initialize("tcp://localhost:1240", NA_TRUE);
+      assert(server_network_class);
+
+      server_hg_class = HG_Init_na(server_network_class);
+      assert(server_hg_class);
+
+      server_hg_context = HG_Context_create(server_hg_class);
+      assert(server_hg_context);
+
+      server_hg_progress_shutdown_flag = false;
+      pthread_create(&progress_thread, NULL, rpc_progress_fn, NULL);
+      server_mkobj_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_mkobj_handler);
+      server_append_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_append_handler);
+      server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler);
+      BINPACKING_SHUTDOWN = false;
+      pthread_create(&binpacking_thread, NULL, binpacking_decorator, this);
+    }
+
+    ~BuddyServer() {
+      while(!GLOBAL_RPC_SHUTDOWN) {
+        sleep(1);
+      }
+      pthread_join(progress_thread, NULL);
+      HG_Hl_finalize();
+      pthread_join(binpacking_thread, NULL);
+      assert(!BINPACKING_SHUTDOWN);
+      while(dirty_bbos_size != 0);
+      build_global_manifest(output_manifest); // important for booting next time and reading
       std::map<std::string, std::list<container_segment_t *> *>::iterator it_obj_cont_map = object_container_map->begin();
       while(it_obj_cont_map != object_container_map->end()) {
         std::list<container_segment_t *>::iterator it_c_segs = it_obj_cont_map->second->begin();
@@ -257,43 +354,120 @@ class BuddyServer//: public Server
       delete object_container_map;
       std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->begin();
       while(it_obj_map != object_map->end()) {
+        assert(it_obj_map->second->dirty_size == 0);
         std::list<chunk_info_t *>::iterator it_chunks = it_obj_map->second->lst_chunks->begin();
         while(it_chunks != it_obj_map->second->lst_chunks->end()) {
           delete (*it_chunks);
           it_chunks++;
         }
+        pthread_mutex_destroy(&(it_obj_map->second->mutex));
         delete it_obj_map->second;
         it_obj_map++;
       }
+      pthread_mutex_destroy(&bbos_mutex);
       delete object_map;
+      delete lru_objects;
+      printf("end of destuctor\n");
     }
 
-  public:
-    static pdlfs::bb::BuddyServer *instance;
-
-    BuddyServer(size_t pfs_chunk_size=8388608, size_t obj_chunk_size=2097152) {
-      OBJ_CHUNK_SIZE = obj_chunk_size;
-      PFS_CHUNK_SIZE = pfs_chunk_size;
-      object_map = new std::map<std::string, bbos_obj_t *>;
-      object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
-      dirty_bbos_size = 0;
-      // rpc_thread = pthread_create(&rpc_thread, NULL, bbos_listen, this);
-      // assert(rpc_thread != 0);
-      bs_obj = (void *) this;
-      bbos_listen(NULL);
+    std::list<binpack_segment_t> get_objects() {
+      switch (binpacking_policy) {
+        case RR_WITH_CURSOR: return rr_with_cursor_binpacking_policy();
+        case ALL: return all_binpacking_policy();
+      }
+      if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
+        return all_binpacking_policy();
+      }
+      std::list<binpack_segment_t> segments;
+      printf("Invalid binpacking policy selected!\n");
+      return segments;
     }
 
-    ~BuddyServer() {
-      pthread_exit(NULL);
-      destroy_data_structures();
+    int build_container(const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
+      //TODO: get container name from a microservice
+      FILE *fp = fopen(c_name, "w+");
+      assert(fp != NULL);
+      binpack_segment_t b_obj;
+      off_t c_offset = 0;
+      std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
+      fprintf(fp, "%lu\n", lst_binpack_segments.size());
+      while(it_bpack != lst_binpack_segments.end()) {
+        b_obj = *it_bpack;
+        it_bpack++;
+        fprintf(fp, "%s:%u:%u:%lu\n", b_obj.obj->name, b_obj.start_chunk, b_obj.end_chunk, c_offset);
+        c_offset += (OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
+      }
+
+      it_bpack = lst_binpack_segments.begin();
+      c_offset = 0;
+      while(it_bpack != lst_binpack_segments.end()) {
+        b_obj = *it_bpack;
+        std::list<chunk_info_t *>::iterator it_chunks = b_obj.obj->lst_chunks->begin();
+        while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.start_chunk) {
+          it_chunks++;
+        }
+        while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
+          //FIXME: write to DW in PFS_CHUNK_SIZE
+          fwrite((*it_chunks)->buf, sizeof(char), OBJ_CHUNK_SIZE, fp);
+          b_obj.obj->dirty_size -= OBJ_CHUNK_SIZE;
+          dirty_bbos_size -= OBJ_CHUNK_SIZE;
+          it_chunks++;
+        }
+
+        // populate the object_container_map
+        container_segment_t *c_seg = new container_segment_t;
+        strcpy(c_seg->container_name, c_name);
+        c_seg->start_chunk = b_obj.start_chunk;
+        c_seg->end_chunk = b_obj.end_chunk;
+        c_seg->offset = c_offset;
+        c_offset += (OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
+        std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(b_obj.obj->name));
+        if(it_map != object_container_map->end()) {
+          // entry already present in global manifest. Just add new segments.
+          it_map->second->push_back(c_seg);
+        } else {
+          std::string bbos_name(b_obj.obj->name);
+          std::list<container_segment_t *> *lst_segments = new std::list<container_segment_t *>;
+          lst_segments->push_back(c_seg);
+          object_container_map->insert(it_map, std::pair<std::string, std::list<container_segment_t *> *>(bbos_name, lst_segments));
+        }
+        it_bpack++;
+      }
+      fclose(fp);
+      return 0;
     }
 
-    int mkobj(char *name) {
+    int mkobj(const char *name) {
       // Initialize an in-memory object
       if(create_bbos_cache_entry(name) == NULL) {
         return -BB_ERROBJ;
       }
+      std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->find(std::string(name));
+      pthread_mutex_unlock(&(it_obj_map->second->mutex));
       return 0;
+    }
+
+    int lock_server() {
+      return pthread_mutex_lock(&bbos_mutex);
+    }
+
+    int unlock_server() {
+      return pthread_mutex_unlock(&bbos_mutex);
+    }
+
+    /* Get total dirty data size */
+    size_t get_dirty_size() {
+      return dirty_bbos_size;
+    }
+
+    /* Get binpacking threshold */
+    size_t get_binpacking_threshold() {
+      return binpacking_threshold;
+    }
+
+    /* Get binpacking policy */
+    size_t get_binpacking_policy() {
+      return binpacking_policy;
     }
 
     /* Get size of BB object */
@@ -317,8 +491,12 @@ class BuddyServer//: public Server
           }
           it_segs++;
         }
+        pthread_mutex_unlock(&(obj->mutex));
         return obj->size;
+      } else {
+        pthread_mutex_lock(&(it_obj_map->second->mutex));
       }
+      pthread_mutex_unlock(&(it_obj_map->second->mutex));
       return it_obj_map->second->size;
     }
 
@@ -326,6 +504,7 @@ class BuddyServer//: public Server
     size_t append(const char *name, void *buf, size_t len) {
       bbos_obj_t *obj = object_map->find(std::string(name))->second;
       assert(obj != NULL);
+      pthread_mutex_lock(&obj->mutex);
       chunk_info_t *last_chunk = obj->lst_chunks->back();
       size_t data_added = 0;
       size_t data_size_for_chunk = 0;
@@ -347,17 +526,20 @@ class BuddyServer//: public Server
       data_added += add_data(last_chunk, buf, data_size_for_chunk);
       obj->size += data_added;
       obj->dirty_size += data_added;
+      if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
+        // add to head of LRU list for binpacking consideration
+        lru_objects->push_front(obj);
+      }
       dirty_bbos_size += data_added;
+      pthread_mutex_unlock(&obj->mutex);
       return data_added;
     }
 
     /* Read from a BB object */
     size_t read(const char *name, void *buf, off_t offset, size_t len) {
       bbos_obj_t *obj = object_map->find(std::string(name))->second;
-      if(obj == NULL) {
-        printf("Object %s missing\n", name);
-      }
       assert(obj != NULL);
+      pthread_mutex_lock(&obj->mutex);
       if(offset >= obj->size) {
         return -BB_INVALID_READ;
       }
@@ -396,233 +578,122 @@ class BuddyServer//: public Server
         data_to_be_read = ((chunk_num + 1) * OBJ_CHUNK_SIZE) - offset;
       }
       data_read += get_data(chunk, buf, offset - (OBJ_CHUNK_SIZE * chunk_num), data_to_be_read);
+      pthread_mutex_unlock(&obj->mutex);
       return data_read;
-    }
-
-    /* Sync a BB object to underlying PFS */
-    //virtual int sync(oid_t id);
-
-    /* Construct underlying PFS object by stitching BB object fragments */
-    pfsid_t binpack(const char *container_name, binpacking_policy policy) {
-      //TODO: to be called via a separate thread based on dirty_bbos_size threshold
-      build_container(container_name, get_objects(policy));
-    }
-
-    /* Shutdown BB server instance */
-    int shutdown(const char *manifest_name) {
-      build_global_manifest(manifest_name);
-      return 0;
-    }
-
-    /* Bootstrap from given global manifest */
-    int bootstrap(const char *manifest_name) {
-      std::ifstream manifest(manifest_name);
-      if(!manifest) {
-        return -BB_ENOMANIFEST;
-      }
-
-      char container_name[PATH_LEN];
-      while(manifest >> container_name) {
-        build_object_container_map(container_name);
-      }
     }
 };
 
-static void* bbos_listen(void *args) {
+static hg_return_t bbos_mkobj_handler(hg_handle_t handle) {
+  bbos_mkobj_out_t out;
+  bbos_mkobj_in_t in;
+  int ret = HG_Get_input(handle, &in);
+  assert(ret == HG_SUCCESS);
+  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name);
+  ret = HG_Respond(handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  (void)ret;
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
+  struct bbos_append_cb *append_info = (struct bbos_append_cb*)info->arg;
+  bbos_append_out_t out;
+  BuddyServer *bs = (BuddyServer *) bs_obj;
+  char name[PATH_LEN];
+  int ret;
+  size_t len = 0;
+  out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
+  ret = HG_Respond(append_info->handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  (void)ret;
+  HG_Destroy(append_info->handle);
+  free(append_info->buffer);
+  free(append_info);
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_append_handler(hg_handle_t handle) {
+  bbos_append_in_t in;
+  struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
+  int ret = HG_Get_input(handle, &in);
+  assert(ret == HG_SUCCESS);
+  size_t input_size = HG_Bulk_get_size(in.bulk_handle);
+  append_info->buffer = (void *) calloc(1, input_size);
+  assert(outbuf);
+  append_info->handle = handle;
+  struct hg_info *hgi = HG_Get_info(handle);
+  assert(hgi);
+  snprintf(append_info->name, PATH_LEN, "%s", in.name);
+  append_info->size = input_size;
+  ret = HG_Bulk_create(hgi->hg_class, 1,
+              &(append_info->buffer), &(input_size),
+  	          HG_BULK_WRITE_ONLY, &(append_info->bulk_handle));
+  assert(ret == HG_SUCCESS);
+  ret = HG_Bulk_transfer(hgi->context, bbos_append_decorator,
+          append_info, HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
+          append_info->bulk_handle, 0, input_size, HG_OP_ID_IGNORE);
+  assert(ret == HG_SUCCESS);
+}
+
+static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
+  bbos_read_out_t out;
+  bbos_read_cb *read_info = (struct bbos_read_cb *) info->arg;
+  out.size = read_info->size;
+  int ret = HG_Respond(read_info->handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  HG_Destroy(read_info->handle);
+  free(read_info);
+  (void)ret;
+}
+
+static hg_return_t bbos_read_handler(hg_handle_t handle) {
+  bbos_read_in_t in;
+  struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
+  int ret = HG_Get_input(handle, &in);
+  assert(ret == HG_SUCCESS);
+  void *outbuf = (void *) calloc(1, in.size);
+  assert(outbuf);
+  read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
+  read_info->remote_bulk_handle = in.bulk_handle;
+  read_info->handle = handle;
+  struct hg_info *hgi = HG_Get_info(handle);
+  assert(hgi);
+  ret = HG_Bulk_create(hgi->hg_class, 1,
+              &(outbuf), &(read_info->size),
+  	          HG_BULK_WRITE_ONLY, &(read_info->bulk_handle));
+  assert(ret == HG_SUCCESS);
+  ret = HG_Bulk_transfer(hgi->context, bbos_read_decorator, read_info,
+          HG_BULK_PUSH, hgi->addr, in.bulk_handle, 0, read_info->bulk_handle,
+          0, read_info->size, HG_OP_ID_IGNORE);
+  assert(ret == HG_SUCCESS);
+  free(outbuf);
+  return HG_SUCCESS;
+}
+
+static void destructor_decorator(int) {
+  GLOBAL_RPC_SHUTDOWN = true;
+  BINPACKING_SHUTDOWN = true;
+}
+
+static void* binpacking_decorator(void *args) {
   BuddyServer *bs = (BuddyServer *)args;
-  std::cout << "Starting RPC listener..." << std::endl;
-  hg_engine_init(NA_TRUE, "tcp://localhost:1234");
-
-  /* register RPC */
-  hg_class_t* hg_class;
-  hg_class = hg_engine_get_class();
-  MERCURY_REGISTER(hg_class, "my_rpc", my_rpc_in_t, my_rpc_out_t, my_rpc_handler);
-  // printf("rpc id = %lu\n", tmp);
-  /* this would really be something waiting for shutdown notification */
-  while(1) {
+  printf("\nStarting binpacking thread...\n");
+  std::list<binpack_segment_t> lst_binpack_segments;
+  do {
+    if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
+      /* we need to binpack */
+      bs->lock_server();
+      /* identify segments of objects to binpack. */
+      lst_binpack_segments = bs->get_objects();
+      assert(lst_binpack_segments.size() > 0);
+      bs->unlock_server();
+      bs->build_container("something", lst_binpack_segments);
+    }
     sleep(1);
-  }
-
-  hg_engine_finalize();
-}
-
-/* callback triggered upon completion of async write */
-static void my_rpc_handler_write_cb(union sigval sig)
-{
-    struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)sig.sival_ptr;
-    int ret = 0;
-    my_rpc_out_t out;
-
-    assert(ret == 0);
-    out.ret = 0;
-
-    /* NOTE: really this should be nonblocking */
-    // close(my_rpc_state_p->acb.aio_fildes);
-
-    /* send ack to client */
-    /* NOTE: don't bother specifying a callback here for completion of sending
-     * response.  This is just a best effort response.
-     */
-    ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
-    assert(ret == HG_SUCCESS);
-    (void)ret;
-
-    HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
-    HG_Destroy(my_rpc_state_p->handle);
-    free(my_rpc_state_p->input);
-    free(my_rpc_state_p);
-
-    return;
-}
-
-static hg_return_t
-my_rpc_push_cb(const struct hg_cb_info *info) {
-  struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)info->arg;
-  hg_return_t ret = HG_SUCCESS;
-  my_rpc_out_t rpc_out;
-
-  /* Set output parameters to inform origin */
-  rpc_out.ret = my_rpc_state_p->ret;
-  HG_Respond(my_rpc_state_p->handle, NULL, NULL, &rpc_out);
-
-  /* Free bulk handles */
-  HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
-  HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
-  HG_Destroy(my_rpc_state_p->handle);
-  free(my_rpc_state_p->input);
-  free(my_rpc_state_p->output);
-  free(my_rpc_state_p);
-  return ret;
-}
-
-/* callback triggered upon completion of bulk transfer */
-static hg_return_t my_rpc_handler_bulk_cb(const struct hg_cb_info *info)
-{
-    struct my_rpc_state *my_rpc_state_p = (pdlfs::bb::my_rpc_state*)info->arg;
-    int ret;
-    BuddyServer *bs = (BuddyServer *) bs_obj;
-    char name[PATH_LEN];
-    size_t len = 0;
-    off_t offset = 0;
-    snprintf(name, PATH_LEN, "%s", (char*)my_rpc_state_p->input);
-    /* send ack to client */
-    /* NOTE: don't bother specifying a callback here for completion of sending
-     * response.  This is just a best effort response.
-     */
-    my_rpc_out_t out;
-    switch((int)my_rpc_state_p->in.action) {
-      case 0: out.ret = bs->mkobj(name);
-              ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
-              assert(ret == HG_SUCCESS);
-              (void)ret;
-
-              HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
-              HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
-              HG_Destroy(my_rpc_state_p->handle);
-              free(my_rpc_state_p->input);
-              free(my_rpc_state_p->output);
-              free(my_rpc_state_p);
-                  break;
-      case 1: memcpy(&len, ((char*)my_rpc_state_p->input+PATH_LEN), sizeof(size_t));
-              out.ret = bs->append(name, (void *)((char *)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), len);
-              ret = HG_Respond(my_rpc_state_p->handle, NULL, NULL, &out);
-              assert(ret == HG_SUCCESS);
-              (void)ret;
-
-              HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
-              HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
-              HG_Destroy(my_rpc_state_p->handle);
-              free(my_rpc_state_p->input);
-              free(my_rpc_state_p->output);
-              free(my_rpc_state_p);
-                  break;
-      case 2:
-              // /* Get pointer to input buffer from local handle */
-              memcpy(&len, ((char*)my_rpc_state_p->input + PATH_LEN), sizeof(size_t));
-              memcpy(&offset, ((char*)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), sizeof(off_t));
-              my_rpc_state_p->output = (void *) calloc(1, len);
-              my_rpc_state_p->ret = bs->read(name, my_rpc_state_p->output, offset, len);
-
-              HG_Bulk_create(HG_Get_info(my_rpc_state_p->handle)->hg_class, 1,
-                &my_rpc_state_p->output, &len, HG_BULK_WRITE_ONLY,
-                &my_rpc_state_p->output_bulk_handle);
-
-              HG_Bulk_transfer(HG_Get_info(my_rpc_state_p->handle)->context,
-                my_rpc_push_cb, my_rpc_state_p,
-                HG_BULK_PUSH, HG_Get_info(my_rpc_state_p->handle)->addr,
-                my_rpc_state_p->in.output_bulk_handle, 0, /* origin */
-                my_rpc_state_p->output_bulk_handle, 0, /* local */
-                len, HG_OP_ID_IGNORE);
-                  break;
-    }
-    return((hg_return_t)0);
-}
-
-/* callback/handler triggered upon receipt of rpc request */
-static hg_return_t my_rpc_handler(hg_handle_t handle)
-{
-    int ret;
-    struct my_rpc_state *my_rpc_state_p;
-    struct hg_info *hgi;
-    int action = -1;
-    hg_bulk_op_t rpc_type = HG_BULK_PULL;
-    size_t input_size = 0;
-    size_t output_size = 0;
-    void *buffer = NULL;
-
-    /* set up state structure */
-    my_rpc_state_p = (pdlfs::bb::my_rpc_state*)malloc(sizeof(*my_rpc_state_p));
-    assert(my_rpc_state_p);
-
-    my_rpc_state_p->handle = handle;
-
-    /* decode input */
-    ret = HG_Get_input(handle, &(my_rpc_state_p->in));
-    assert(ret == HG_SUCCESS);
-
-    input_size = HG_Bulk_get_size(my_rpc_state_p->in.input_bulk_handle);
-    output_size = HG_Bulk_get_size(my_rpc_state_p->in.output_bulk_handle);
-    /* get action to perform */
-    action = my_rpc_state_p->in.action;
-    my_rpc_state_p->size = input_size;
-    switch (action) {
-      case 0: rpc_type = HG_BULK_PULL;
-              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-              assert(my_rpc_state_p->input);
-              my_rpc_state_p->output = calloc(1, output_size);
-              assert(my_rpc_state_p->output);
-              break;
-      case 1: rpc_type = HG_BULK_PULL;
-              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-              assert(my_rpc_state_p->input);
-              my_rpc_state_p->output = calloc(1, output_size);
-              assert(my_rpc_state_p->output);
-              //NOTE: this assumes that each append is going to be of a fixed size.
-              break;
-      case 2: rpc_type = HG_BULK_PULL;
-              my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-              assert(my_rpc_state_p->input);
-              my_rpc_state_p->output = calloc(1, output_size);
-              assert(my_rpc_state_p->output);
-              //NOTE: this assumes that each append is going to be of a fixed size.
-              break;
-    }
-
-    /* register local target input for bulk access */
-    hgi = HG_Get_info(handle);
-    assert(hgi);
-
-    ret = HG_Bulk_create(HG_Get_info(handle)->hg_class, 1, &(my_rpc_state_p->input), &(my_rpc_state_p->size),
-	    HG_BULK_WRITE_ONLY, &(my_rpc_state_p->input_bulk_handle));
-    assert(ret == 0);
-
-    /* initiate bulk transfer from client to server */
-    ret = HG_Bulk_transfer(hgi->context, my_rpc_handler_bulk_cb,
-        my_rpc_state_p, rpc_type, hgi->addr, my_rpc_state_p->in.input_bulk_handle, 0,
-        my_rpc_state_p->input_bulk_handle, 0, my_rpc_state_p->size, HG_OP_ID_IGNORE);
-    assert(ret == 0);
-    (void)ret;
-    return((hg_return_t)0);
+  } while(!BINPACKING_SHUTDOWN);
+  printf("Shutting down binpacking thread\n");
+  BINPACKING_SHUTDOWN = false;
+  pthread_exit(NULL);
 }
 
 } // namespace bb

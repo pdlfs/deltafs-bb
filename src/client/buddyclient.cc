@@ -16,8 +16,16 @@
 #include <string.h>
 #include <sstream>
 #include <fstream>
+#include <unistd.h>
+#include <mercury.h>
+#include <mercury_bulk.h>
+#include <mercury_macros.h>
+#include <mercury_request.h>
+#include <mercury_hl.h>
+#include <mercury_hl_macros.h>
+#include <mercury_proc_string.h>
+#include <mercury_config.h>
 #include "buddyclient.h"
-//#include "src/server/interface.h"
 
 namespace pdlfs {
 namespace bb {
@@ -25,191 +33,214 @@ namespace bb {
 static int done = 0;
 static pthread_cond_t done_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t done_mutex = PTHREAD_MUTEX_INITIALIZER;
-static hg_id_t my_rpc_id;
-
-static hg_return_t my_rpc_cb(const struct hg_cb_info *info);
 static void run_my_rpc(int value);
-static hg_return_t lookup_cb(const struct hg_cb_info *callback_info);
-
-static int rpc_retval = 0;
-static void *rpc_retbuf = NULL;
-
-/* struct used to carry state of overall operation across callbacks */
-struct my_rpc_client_state
-{
-    hg_size_t size;
-    hg_size_t output_size;
-    int action;
-    char name[PATH_LEN];
-    void *input;
-    void *output;
-    hg_bulk_t input_bulk_handle;
-    hg_bulk_t output_bulk_handle;
-    hg_handle_t handle;
-};
+static na_class_t *network_class;
+static hg_context_t *hg_context;
+static hg_class_t *hg_class;
+static hg_addr_t server_addr;
+static hg_id_t mkobj_rpc_id;
+static hg_id_t append_rpc_id;
+static hg_id_t read_rpc_id;
+static hg_bool_t hg_progress_shutdown_flag;
 
 struct operation_details {
   char name[256];
+  hg_handle_t handle;
   enum ACTION action;
+  union {
+    bbos_mkobj_out_t mkobj_out;
+    bbos_append_out_t append_out;
+    bbos_read_out_t read_out;
+  } output;
   void *buf;
   size_t len;
   off_t offset;
 };
 
+static void* client_rpc_progress_fn(void *args) {
+  hg_return_t ret;
+  unsigned int actual_count;
+
+  while(!hg_progress_shutdown_flag)
+  {
+      do {
+          ret = HG_Trigger(hg_context, 0, 1, &actual_count);
+      } while((ret == HG_SUCCESS) && actual_count && !hg_progress_shutdown_flag);
+
+      if(!hg_progress_shutdown_flag)
+          HG_Progress(hg_context, 100);
+  }
+}
+
+static hg_return_t bbos_rpc_handler(hg_handle_t handle) {
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  hg_return_t hg_ret;
+  hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.mkobj_out));
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  done++;
+  pthread_cond_signal(&done_cond);
+  pthread_mutex_unlock(&done_mutex);
+  /* Complete */
+  hg_ret = HG_Destroy(callback_info->info.forward.handle);
+  assert(hg_ret == HG_SUCCESS);
+  return HG_SUCCESS;
+}
+
+static hg_return_t issue_mkobj_rpc(const struct hg_cb_info *callback_info) {
+  bbos_mkobj_in_t in;
+  hg_return_t hg_ret;
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
+  hg_ret = HG_Create(hg_context, server_addr, mkobj_rpc_id, &(op->handle));
+  assert(hg_ret == HG_SUCCESS);
+  assert(op->handle);
+  /* Fill input structure */
+  in.name = (const char *)op->name;
+  /* Forward call to remote addr and get a new request */
+  hg_ret = HG_Forward(op->handle, bbos_mkobj_cb, op, &in);
+  assert(hg_ret == HG_SUCCESS);
+  return ((hg_return_t)NA_SUCCESS);
+}
+
+static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  hg_return_t hg_ret;
+  hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.append_out));
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  done++;
+  pthread_cond_signal(&done_cond);
+  pthread_mutex_unlock(&done_mutex);
+  /* Complete */
+  hg_ret = HG_Destroy(callback_info->info.forward.handle);
+  assert(hg_ret == HG_SUCCESS);
+  return HG_SUCCESS;
+}
+
+static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
+  bbos_append_in_t in;
+  hg_return_t hg_ret;
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
+  hg_ret = HG_Create(hg_context, server_addr, append_rpc_id, &(op->handle));
+  assert(hg_ret == HG_SUCCESS);
+  assert(op->handle);
+
+  /* Fill input structure */
+  in.name = (const char *)op->name;
+  hg_ret = HG_Bulk_create(hg_class, 1, &(op->buf), &(op->len), HG_BULK_READ_ONLY, &(in.bulk_handle));
+  assert(hg_ret == HG_SUCCESS);
+
+  /* Forward call to remote addr and get a new request */
+  hg_ret = HG_Forward(op->handle, bbos_append_cb, op, &in);
+  assert(hg_ret == HG_SUCCESS);
+  return ((hg_return_t)NA_SUCCESS);
+}
+
+static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  hg_return_t hg_ret;
+  hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.read_out));
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  done++;
+  pthread_cond_signal(&done_cond);
+  pthread_mutex_unlock(&done_mutex);
+  /* Complete */
+  hg_ret = HG_Destroy(callback_info->info.forward.handle);
+  assert(hg_ret == HG_SUCCESS);
+  return HG_SUCCESS;
+}
+
+static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
+  bbos_read_in_t in;
+  hg_return_t hg_ret;
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
+  hg_ret = HG_Create(hg_context, server_addr, read_rpc_id, &(op->handle));
+  assert(hg_ret == HG_SUCCESS);
+  assert(op->handle);
+
+  /* Fill input structure */
+  in.name = (const char *) op->name;
+  in.offset = (off_t) op->offset;
+  in.size = (size_t) op->len;
+
+  op->buf = (void *) calloc (1, op->len);
+
+  hg_ret = HG_Bulk_create(hg_class, 1, &(op->buf), &(op->len),
+            HG_BULK_READWRITE, &(in.bulk_handle));
+  assert(hg_ret == HG_SUCCESS);
+
+  /* Forward call to remote addr and get a new request */
+  hg_ret = HG_Forward(op->handle, bbos_read_cb, op, &in);
+  assert(hg_ret == HG_SUCCESS);
+  return ((hg_return_t)NA_SUCCESS);
+}
+
 static void run_my_rpc(struct operation_details *op)
 {
-    /* address lookup.  This is an async operation as well so we continue in
-     * a callback from here.
-     */
-    hg_engine_addr_lookup("tcp://localhost:1234", lookup_cb, op);
+    na_return_t ret;
+    switch (op->action) {
+      case MKOBJ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_mkobj_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+                  break;
+      case APPEND: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_append_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+                   break;
+      case READ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_read_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+                 break;
+    }
+    assert(ret == NA_SUCCESS);
+    (void)ret;
     return;
 }
 
-static hg_return_t lookup_cb(const struct hg_cb_info *callback_info)
-{
-    na_addr_t svr_addr = callback_info->info.lookup.addr;
-    my_rpc_in_t in;
-    struct hg_info *hgi;
-    int ret;
-    size_t output_size;
-    struct my_rpc_client_state *my_rpc_state_p;
-
-    assert(callback_info->ret == 0);
-
-    /* set up state structure */
-    my_rpc_state_p = (pdlfs::bb::my_rpc_client_state*) malloc(sizeof(*my_rpc_state_p));
-    struct operation_details *op = (struct operation_details *) callback_info->arg;
-    my_rpc_state_p->action = op->action;
-    snprintf(my_rpc_state_p->name, PATH_LEN, "%s", op->name);
-    my_rpc_state_p->output_size = op->len;
-    if(my_rpc_state_p->output_size == 0) {
-      my_rpc_state_p->output_size = 1;
-    }
-    switch (my_rpc_state_p->action) {
-
-      case MKOBJ: my_rpc_state_p->size = PATH_LEN;
-                  /* This includes allocating a src buffer for bulk transfer */
-                  my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-                  my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
-                  assert(my_rpc_state_p->input != NULL);
-                  assert(my_rpc_state_p->output != NULL);
-                  snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
-                  break;
-
-      case APPEND:  my_rpc_state_p->size = PATH_LEN + op->len + sizeof(size_t);
-                    /* This includes allocating a src buffer for bulk transfer */
-                    my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-                    my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
-                    assert(my_rpc_state_p->input != NULL);
-                    assert(my_rpc_state_p->output != NULL);
-                    snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
-                    memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN), &op->len, sizeof(size_t));
-                    memcpy((void *)((char *)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), op->buf, op->len);
-                    free(op->buf);
-                    break;
-
-      case READ: my_rpc_state_p->size = PATH_LEN + sizeof(size_t) + sizeof(off_t);
-                 my_rpc_state_p->output_size += PATH_LEN + sizeof(size_t) + sizeof(off_t);
-                 /* This includes allocating a src buffer for bulk transfer */
-                 my_rpc_state_p->input = calloc(1, my_rpc_state_p->size);
-                 my_rpc_state_p->output = calloc(1, my_rpc_state_p->output_size);
-                 assert(my_rpc_state_p->input != NULL);
-                 assert(my_rpc_state_p->output != NULL);
-                 snprintf((char*)my_rpc_state_p->input, PATH_LEN, "%s", op->name);
-                 memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN), &op->len, sizeof(size_t));
-                 memcpy((void *)((char*)my_rpc_state_p->input + PATH_LEN + sizeof(size_t)), &op->offset, sizeof(off_t));
-                 free(op->buf);
-                 break;
-    }
-
-    free(op);
-
-    /* create create handle to represent this rpc operation */
-    hg_engine_create_handle(svr_addr, my_rpc_id, &my_rpc_state_p->handle);
-
-    /* register buffer for rdma/bulk access by server */
-    hgi = HG_Get_info(my_rpc_state_p->handle);
-    assert(hgi);
-    ret = HG_Bulk_create(hgi->hg_class, 1, &(my_rpc_state_p->input), &(my_rpc_state_p->size),
-        HG_BULK_READ_ONLY, &(in.input_bulk_handle));
-    my_rpc_state_p->input_bulk_handle = in.input_bulk_handle;
-    assert(ret == 0);
-
-    ret = HG_Bulk_create(hgi->hg_class, 1, &(my_rpc_state_p->output), &(my_rpc_state_p->output_size),
-        HG_BULK_READWRITE, &(in.output_bulk_handle));
-    assert(ret == 0);
-
-    /* Send rpc. Note that we are also transmitting the bulk handle in the
-     * input struct.  It was set above.
-     */
-    in.action = my_rpc_state_p->action;
-    ret = HG_Forward(my_rpc_state_p->handle, my_rpc_cb, my_rpc_state_p, &in);
-    assert(ret == 0);
-    (void)ret;
-
-    return((hg_return_t)NA_SUCCESS);
-}
-
-/* callback triggered upon receipt of rpc response */
-static hg_return_t my_rpc_cb(const struct hg_cb_info *info)
-{
-    my_rpc_out_t out;
-    int ret;
-    size_t out_length;
-    struct my_rpc_client_state *my_rpc_state_p = (pdlfs::bb::my_rpc_client_state*)info->arg;
-
-    assert(info->ret == HG_SUCCESS);
-
-    /* decode response */
-    ret = HG_Get_output(info->info.forward.handle, &out);
-    assert(ret == 0);
-    (void)ret;
-
-    rpc_retval = out.ret;
-
-    switch (my_rpc_state_p->action) {
-      case 2: memcpy(rpc_retbuf, my_rpc_state_p->output, rpc_retval);
-              break;
-    }
-
-    /* clean up resources consumed by this rpc */
-    HG_Bulk_free(my_rpc_state_p->input_bulk_handle);
-    HG_Bulk_free(my_rpc_state_p->output_bulk_handle);
-    HG_Free_output(info->info.forward.handle, &out);
-    HG_Destroy(info->info.forward.handle);
-    free(my_rpc_state_p->input);
-    free(my_rpc_state_p->output);
-    free(my_rpc_state_p);
-
-    /* signal to main() that we are done */
-    pthread_mutex_lock(&done_mutex);
-    done++;
-    pthread_cond_signal(&done_cond);
-    pthread_mutex_unlock(&done_mutex);
-
-    return(HG_SUCCESS);
-}
-
-class BuddyClient//: public Client
+class BuddyClient
 {
   private:
+    int port;
+    hg_thread_t progress_thread;
 
   public:
-    BuddyClient() {
-      int i;
+    BuddyClient(int port=1234) {
+      network_class = NULL;
+      hg_context = NULL;
+      hg_class = NULL;
 
+      this->port = port;
       /* start mercury and register RPC */
-      hg_engine_init(NA_FALSE, "tcp");
-      hg_class_t* hg_class;
-      hg_class = hg_engine_get_class();
+      int ret;
 
-      my_rpc_id = MERCURY_REGISTER(hg_class, "my_rpc", my_rpc_in_t, my_rpc_out_t, my_rpc_handler);
+      network_class = NA_Initialize("tcp", NA_FALSE);
+      assert(network_class);
+
+      hg_class = HG_Init_na(network_class);
+      assert(hg_class);
+
+      hg_context = HG_Context_create(hg_class);
+      assert(hg_context);
+
+      hg_progress_shutdown_flag = false;
+      hg_thread_create(&progress_thread, client_rpc_progress_fn, hg_context);
+      mkobj_rpc_id = MERCURY_REGISTER(hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_rpc_handler);
+      append_rpc_id = MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
+      read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
     }
 
-    int mkobj(char *name) {
+    ~BuddyClient() {
+      hg_return_t ret = HG_SUCCESS;
+      ret = HG_Hl_finalize();
+      assert(ret == HG_SUCCESS);
+    }
+
+    int mkobj(const char *name) {
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
-      int retval;
+      int retval = -1;
       op->buf = NULL;
       op->len = 0;
       op->action = MKOBJ;
@@ -219,8 +250,8 @@ class BuddyClient//: public Client
         pthread_cond_wait(&done_cond, &done_mutex);
       done--;
       pthread_mutex_unlock(&done_mutex);
-      retval = (int) rpc_retval;
-      rpc_retval = 0;
+      retval = op->output.mkobj_out.status;
+      free(op);
       return retval;
     }
 
@@ -239,8 +270,9 @@ class BuddyClient//: public Client
         pthread_cond_wait(&done_cond, &done_mutex);
       done--;
       pthread_mutex_unlock(&done_mutex);
-      retval = (size_t) rpc_retval;
-      rpc_retval = 0;
+      retval = (size_t) op->output.append_out.size;
+      free(op->buf);
+      free(op);
       return retval;
     }
 
@@ -248,25 +280,20 @@ class BuddyClient//: public Client
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval;
-      rpc_retbuf = buf;
       op->len = len;
       op->offset = offset;
       op->action = READ;
-      op->buf = NULL;
       run_my_rpc(op);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
         pthread_cond_wait(&done_cond, &done_mutex);
       done--;
       pthread_mutex_unlock(&done_mutex);
-      retval = (int) rpc_retval;
-      rpc_retval = 0;
+      retval = (size_t) op->output.read_out.size;
+      memcpy(buf, op->buf, retval);
+      free(op->buf);
+      free(op);
       return retval;
-    }
-
-    ~BuddyClient() {
-      /* shut down */
-      hg_engine_finalize();
     }
 };
 

@@ -9,15 +9,45 @@
 
 #include <list>
 #include <map>
+#include <mercury.h>
+#include <mercury_bulk.h>
+#include <mercury_macros.h>
+#include <mercury_request.h>
+#include <mercury_hl.h>
+#include <mercury_hl_macros.h>
+#include <mercury_proc_string.h>
+#include <mercury_thread.h>
+#include <mercury_config.h>
 //#include "src/server/interface.h"
-#include "../rpc/rpc_engine.h"
+// #include "../rpc/rpc_engine.h"
 // #include "../rpc/rpc.h"
 
 namespace pdlfs {
 namespace bb {
 
-#ifndef BBOS_RPC_SERVER_H
-#define BBOS_RPC_SERVER_H
+// #ifndef BBOS_RPC_SERVER_H
+// #define BBOS_RPC_SERVER_H
+
+MERCURY_GEN_PROC(bbos_mkobj_in_t,
+    ((hg_const_string_t)(name)))
+MERCURY_GEN_PROC(bbos_mkobj_out_t,
+    ((hg_id_t)(status)))
+MERCURY_GEN_PROC(bbos_append_in_t,
+    ((hg_const_string_t)(name))\
+    ((hg_bulk_t)(bulk_handle)))
+MERCURY_GEN_PROC(bbos_append_out_t,
+    ((hg_size_t)(size)))
+MERCURY_GEN_PROC(bbos_read_in_t,
+    ((hg_const_string_t)(name))\
+    ((hg_size_t)(offset))\
+    ((hg_size_t)(size))\
+    ((hg_bulk_t)(bulk_handle)))
+MERCURY_GEN_PROC(bbos_read_out_t,
+    ((hg_size_t)(size)))
+    // ((hg_bulk_t)(bulk_handle))\
+    ((hg_size_t)(size)))
+
+static hg_return_t bbos_rpc_handler(hg_handle_t handle);
 
 typedef uint64_t oid_t;
 typedef uint64_t pfsid_t;
@@ -34,11 +64,24 @@ typedef uint32_t chunkid_t;
 #define BB_ENOCONTAINER 7
 #define BB_ERROBJ 8
 
-//#define PFS_CHUNK_SIZE 8388608
-//#define OBJ_CHUNK_SIZE 2097152
-enum binpacking_policy { GREEDY };
+enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
+
+// typedef struct {
+//   na_class_t *network_class;
+//   hg_context_t *hg_context;
+//   hg_class_t *hg_class;
+//   pthread_t thread;
+//   int hg_progress_shutdown_flag;
+//   int id;
+//   char url[PATH_LEN];
+// } rpc_context_t;
+
+typedef struct {
+  pthread_t thread;
+  std::list<struct hg_cb_info *> queue;
+} client_context_t;
 
 typedef struct {
   chunkid_t id;
@@ -53,6 +96,8 @@ typedef struct {
   std::list<chunk_info_t *> *lst_chunks; // list of chunks in BBOS object
   chunkid_t last_chunk_flushed;
   size_t dirty_size;
+  pthread_mutex_t mutex;
+  chunkid_t cursor;
 } bbos_obj_t;
 
 typedef struct {
@@ -68,7 +113,7 @@ typedef struct {
   off_t offset;
 } container_segment_t;
 
-#endif /* BBOS_RPC_SERVER_H */
+// #endif /* BBOS_RPC_SERVER_H */
 
 } // namespace bb
 } // namespace pdlfs
