@@ -22,7 +22,7 @@ namespace bb {
 
 #define PATH_LEN 256
 
-enum ACTION {MKOBJ, APPEND, READ};
+enum ACTION {MKOBJ, APPEND, READ, GET_SIZE};
 
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
     ((hg_const_string_t)(name)))
@@ -39,6 +39,10 @@ MERCURY_GEN_PROC(bbos_read_in_t,
     ((hg_size_t)(size))\
     ((hg_bulk_t)(bulk_handle)))
 MERCURY_GEN_PROC(bbos_read_out_t,
+    ((hg_size_t)(size)))
+MERCURY_GEN_PROC(bbos_get_size_in_t,
+    ((hg_const_string_t)(name)))
+MERCURY_GEN_PROC(bbos_get_size_out_t,
     ((hg_size_t)(size)))
 
 } // namespace bb

@@ -26,16 +26,22 @@ void read_data(BuddyClient *bc, const char *name, char *output, int num_chars) {
   } while(total_data_read < num_chars);
 }
 
-int main() {
+int main(int argc, char **argv) {
   char input[8] = "12345";
   char output[8] = "";
   int ret;
-  BuddyClient *bc = new BuddyClient(1234);
-  ret = bc->mkobj("first");
-  write_data(bc, "first", input, 6);
+  if(argc < 2) {
+    printf("Not enough arguments for testing client.\n");
+    exit(1);
+  }
+  BuddyClient *bc = new BuddyClient();
+  ret = bc->mkobj(argv[1]);
+  write_data(bc, argv[1], input, 6);
   assert(ret == 0);
-  read_data(bc, "first", output, 6);
-  printf("data read = %s\n", output);
+  read_data(bc, argv[1], output, 6);
+  printf("data read = from object %s = %s\n", argv[1], output);
+  size_t size = bc->get_size(argv[1]);
+  printf("size of object %s = %lu\n", argv[1], size);
   delete bc;
   return 0;
 }

@@ -19,15 +19,9 @@
 #include <mercury_thread.h>
 #include <mercury_config.h>
 #include <mercury_thread_pool.h>
-//#include "src/server/interface.h"
-// #include "../rpc/rpc_engine.h"
-// #include "../rpc/rpc.h"
 
 namespace pdlfs {
 namespace bb {
-
-// #ifndef BBOS_RPC_SERVER_H
-// #define BBOS_RPC_SERVER_H
 
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
     ((hg_const_string_t)(name)))
@@ -44,6 +38,10 @@ MERCURY_GEN_PROC(bbos_read_in_t,
     ((hg_size_t)(size))\
     ((hg_bulk_t)(bulk_handle)))
 MERCURY_GEN_PROC(bbos_read_out_t,
+    ((hg_size_t)(size)))
+MERCURY_GEN_PROC(bbos_get_size_in_t,
+    ((hg_const_string_t)(name)))
+MERCURY_GEN_PROC(bbos_get_size_out_t,
     ((hg_size_t)(size)))
 
 static hg_return_t bbos_rpc_handler(hg_handle_t handle);
@@ -66,16 +64,6 @@ typedef uint32_t chunkid_t;
 enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
-
-// typedef struct {
-//   na_class_t *network_class;
-//   hg_context_t *hg_context;
-//   hg_class_t *hg_class;
-//   pthread_t thread;
-//   int hg_progress_shutdown_flag;
-//   int id;
-//   char url[PATH_LEN];
-// } rpc_context_t;
 
 typedef struct {
   pthread_t thread;
@@ -111,8 +99,6 @@ typedef struct {
   chunkid_t end_chunk;
   off_t offset;
 } container_segment_t;
-
-// #endif /* BBOS_RPC_SERVER_H */
 
 } // namespace bb
 } // namespace pdlfs

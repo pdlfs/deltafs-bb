@@ -41,6 +41,7 @@ static hg_addr_t server_addr;
 static hg_id_t mkobj_rpc_id;
 static hg_id_t append_rpc_id;
 static hg_id_t read_rpc_id;
+static hg_id_t get_size_rpc_id;
 static hg_bool_t hg_progress_shutdown_flag;
 
 struct operation_details {
@@ -51,6 +52,7 @@ struct operation_details {
     bbos_mkobj_out_t mkobj_out;
     bbos_append_out_t append_out;
     bbos_read_out_t read_out;
+    bbos_get_size_out_t get_size_out;
   } output;
   void *buf;
   size_t len;
@@ -183,6 +185,37 @@ static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
   return ((hg_return_t)NA_SUCCESS);
 }
 
+static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  hg_return_t hg_ret;
+  hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.get_size_out));
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  done++;
+  pthread_cond_signal(&done_cond);
+  pthread_mutex_unlock(&done_mutex);
+  /* Complete */
+  hg_ret = HG_Destroy(callback_info->info.forward.handle);
+  assert(hg_ret == HG_SUCCESS);
+  return HG_SUCCESS;
+}
+
+static hg_return_t issue_get_size_rpc(const struct hg_cb_info *callback_info) {
+  bbos_mkobj_in_t in;
+  hg_return_t hg_ret;
+  struct operation_details *op = (struct operation_details *)callback_info->arg;
+  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
+  hg_ret = HG_Create(hg_context, server_addr, get_size_rpc_id, &(op->handle));
+  assert(hg_ret == HG_SUCCESS);
+  assert(op->handle);
+  /* Fill input structure */
+  in.name = (const char *)op->name;
+  /* Forward call to remote addr and get a new request */
+  hg_ret = HG_Forward(op->handle, bbos_get_size_cb, op, &in);
+  assert(hg_ret == HG_SUCCESS);
+  return ((hg_return_t)NA_SUCCESS);
+}
+
 static void run_my_rpc(struct operation_details *op)
 {
     na_return_t ret;
@@ -193,6 +226,8 @@ static void run_my_rpc(struct operation_details *op)
                    break;
       case READ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_read_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
                  break;
+      case GET_SIZE: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_get_size_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+                     break;
     }
     assert(ret == NA_SUCCESS);
     (void)ret;
@@ -229,6 +264,7 @@ class BuddyClient
       mkobj_rpc_id = MERCURY_REGISTER(hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_rpc_handler);
       append_rpc_id = MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
       read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
+      get_size_rpc_id = MERCURY_REGISTER(hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_rpc_handler);
     }
 
     ~BuddyClient() {
@@ -292,6 +328,24 @@ class BuddyClient
       retval = (size_t) op->output.read_out.size;
       memcpy(buf, op->buf, retval);
       free(op->buf);
+      free(op);
+      return retval;
+    }
+
+    int get_size(const char *name) {
+      struct operation_details *op = new operation_details;
+      sprintf(op->name, "%s", name);
+      int retval = -1;
+      op->buf = NULL;
+      op->len = 0;
+      op->action = GET_SIZE;
+      run_my_rpc(op);
+      pthread_mutex_lock(&done_mutex);
+      while(done < 1)
+        pthread_cond_wait(&done_cond, &done_mutex);
+      done--;
+      pthread_mutex_unlock(&done_mutex);
+      retval = op->output.get_size_out.size;
       free(op);
       return retval;
     }
