@@ -18,6 +18,7 @@
 #include <mercury_proc_string.h>
 #include <mercury_thread.h>
 #include <mercury_config.h>
+#include <mercury_thread_pool.h>
 //#include "src/server/interface.h"
 // #include "../rpc/rpc_engine.h"
 // #include "../rpc/rpc.h"
@@ -43,8 +44,6 @@ MERCURY_GEN_PROC(bbos_read_in_t,
     ((hg_size_t)(size))\
     ((hg_bulk_t)(bulk_handle)))
 MERCURY_GEN_PROC(bbos_read_out_t,
-    ((hg_size_t)(size)))
-    // ((hg_bulk_t)(bulk_handle))\
     ((hg_size_t)(size)))
 
 static hg_return_t bbos_rpc_handler(hg_handle_t handle);

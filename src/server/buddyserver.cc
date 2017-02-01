@@ -28,9 +28,12 @@ namespace bb {
 
 static void* binpacking_decorator(void *args);
 static void destructor_decorator(int);
-static hg_return_t bbos_mkobj_handler(hg_handle_t handle);
-static hg_return_t bbos_append_handler(hg_handle_t handle);
-static hg_return_t bbos_read_handler(hg_handle_t handle);
+static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args);
+static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args);
+static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args);
+static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle);
+static hg_return_t bbos_append_handler_decorator(hg_handle_t handle);
+static hg_return_t bbos_read_handler_decorator(hg_handle_t handle);
 
 static size_t OBJ_CHUNK_SIZE;
 static size_t PFS_CHUNK_SIZE;
@@ -45,6 +48,8 @@ static hg_bool_t server_hg_progress_shutdown_flag;
 static hg_id_t server_mkobj_rpc_id;
 static hg_id_t server_append_rpc_id;
 static hg_id_t server_read_rpc_id;
+
+static hg_thread_pool_t *thread_pool;
 
 static void *bs_obj;
 
@@ -324,9 +329,12 @@ class BuddyServer
 
       server_hg_progress_shutdown_flag = false;
       pthread_create(&progress_thread, NULL, rpc_progress_fn, NULL);
-      server_mkobj_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_mkobj_handler);
-      server_append_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_append_handler);
-      server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler);
+      server_mkobj_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_mkobj_handler_decorator);
+      server_append_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_append_handler_decorator);
+      server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler_decorator);
+
+      hg_thread_pool_init(fan_in, &thread_pool);
+
       BINPACKING_SHUTDOWN = false;
       pthread_create(&binpacking_thread, NULL, binpacking_decorator, this);
     }
@@ -583,16 +591,18 @@ class BuddyServer
     }
 };
 
-static hg_return_t bbos_mkobj_handler(hg_handle_t handle) {
+static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
+  hg_handle_t *handle = (hg_handle_t *) args;
   bbos_mkobj_out_t out;
   bbos_mkobj_in_t in;
-  int ret = HG_Get_input(handle, &in);
+  int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
   out.status = ((BuddyServer *)bs_obj)->mkobj(in.name);
-  ret = HG_Respond(handle, NULL, NULL, &out);
+  ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
-  return HG_SUCCESS;
+  free(args);
+  return (hg_thread_ret_t) NULL;
 }
 
 static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
@@ -612,16 +622,17 @@ static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
   return HG_SUCCESS;
 }
 
-static hg_return_t bbos_append_handler(hg_handle_t handle) {
+static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args) {
   bbos_append_in_t in;
+  hg_handle_t *handle = (hg_handle_t *) args;
   struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
-  int ret = HG_Get_input(handle, &in);
+  int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
   size_t input_size = HG_Bulk_get_size(in.bulk_handle);
   append_info->buffer = (void *) calloc(1, input_size);
-  assert(outbuf);
-  append_info->handle = handle;
-  struct hg_info *hgi = HG_Get_info(handle);
+  assert(append_info->buffer);
+  append_info->handle = *handle;
+  struct hg_info *hgi = HG_Get_info(*handle);
   assert(hgi);
   snprintf(append_info->name, PATH_LEN, "%s", in.name);
   append_info->size = input_size;
@@ -633,6 +644,8 @@ static hg_return_t bbos_append_handler(hg_handle_t handle) {
           append_info, HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
           append_info->bulk_handle, 0, input_size, HG_OP_ID_IGNORE);
   assert(ret == HG_SUCCESS);
+  free(args);
+  return (hg_thread_ret_t) NULL;
 }
 
 static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
@@ -646,17 +659,18 @@ static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
   (void)ret;
 }
 
-static hg_return_t bbos_read_handler(hg_handle_t handle) {
+static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
   bbos_read_in_t in;
+  hg_handle_t *handle = (hg_handle_t *) args;
   struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
-  int ret = HG_Get_input(handle, &in);
+  int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
   void *outbuf = (void *) calloc(1, in.size);
   assert(outbuf);
   read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
   read_info->remote_bulk_handle = in.bulk_handle;
-  read_info->handle = handle;
-  struct hg_info *hgi = HG_Get_info(handle);
+  read_info->handle = *handle;
+  struct hg_info *hgi = HG_Get_info(*handle);
   assert(hgi);
   ret = HG_Bulk_create(hgi->hg_class, 1,
               &(outbuf), &(read_info->size),
@@ -667,6 +681,34 @@ static hg_return_t bbos_read_handler(hg_handle_t handle) {
           0, read_info->size, HG_OP_ID_IGNORE);
   assert(ret == HG_SUCCESS);
   free(outbuf);
+  free(args);
+  return (hg_thread_ret_t) NULL;
+}
+
+static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle) {
+  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  work->func = bbos_mkobj_handler;
+  work->args = (void *) malloc (sizeof(hg_handle_t));
+  memcpy(work->args, &handle, sizeof(handle));
+  hg_thread_pool_post(thread_pool, work);
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_read_handler_decorator(hg_handle_t handle) {
+  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  work->func = bbos_read_handler;
+  work->args = (void *) malloc (sizeof(hg_handle_t));
+  memcpy(work->args, &handle, sizeof(handle));
+  hg_thread_pool_post(thread_pool, work);
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_append_handler_decorator(hg_handle_t handle) {
+  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  work->func = bbos_append_handler;
+  work->args = (void *) malloc (sizeof(hg_handle_t));
+  memcpy(work->args, &handle, sizeof(handle));
+  hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
 

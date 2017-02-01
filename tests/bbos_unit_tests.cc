@@ -31,7 +31,7 @@ void read_data(BuddyServer *bs, const char *name, char *output, int num_chars) {
 int main() {
   char input[9] = "12345678";
   char output[9] = "";
-  BuddyServer *bs = new BuddyServer("/tmp/BBOS_MANIFEST.txt", 8, 2, 1);
+  BuddyServer *bs = new BuddyServer("/tmp/BBOS_MANIFEST.txt", 8, 2, 4);
   delete bs;
   //std::cout << "starting client" << std::endl;
   //BuddyClient *bc = new BuddyClient();
