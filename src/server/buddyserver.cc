@@ -105,6 +105,7 @@ class BuddyServer
     size_t OBJECT_DIRTY_THRESHOLD;
     size_t CONTAINER_SIZE;
     pthread_mutex_t bbos_mutex;
+    int containers_built;
     char output_manifest[PATH_LEN];
     int fan_in;
 
@@ -211,8 +212,8 @@ class BuddyServer
       std::string token;
       std::string bbos_name;
 
-      int num_objs = 0;
-      container >> num_objs; // first line contains number of objects.
+      container >> containers_built; // first line contains number of objects.
+      int num_objs = containers_built;
       std::getline(container, line); // this is the empty line
 
       while(num_objs > 0) {
@@ -334,7 +335,7 @@ class BuddyServer
       server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler_decorator);
 
       hg_thread_pool_init(fan_in, &thread_pool);
-
+      containers_built = 0;
       BINPACKING_SHUTDOWN = false;
       pthread_create(&binpacking_thread, NULL, binpacking_decorator, this);
     }
@@ -345,9 +346,10 @@ class BuddyServer
       }
       pthread_join(progress_thread, NULL);
       HG_Hl_finalize();
+      hg_thread_pool_destroy(thread_pool);
       pthread_join(binpacking_thread, NULL);
       assert(!BINPACKING_SHUTDOWN);
-      while(dirty_bbos_size != 0);
+      assert(dirty_bbos_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
       std::map<std::string, std::list<container_segment_t *> *>::iterator it_obj_cont_map = object_container_map->begin();
       while(it_obj_cont_map != object_container_map->end()) {
@@ -375,7 +377,7 @@ class BuddyServer
       pthread_mutex_destroy(&bbos_mutex);
       delete object_map;
       delete lru_objects;
-      printf("end of destuctor\n");
+      // printf("end of destuctor\n");
     }
 
     std::list<binpack_segment_t> get_objects() {
@@ -476,6 +478,12 @@ class BuddyServer
     /* Get binpacking policy */
     size_t get_binpacking_policy() {
       return binpacking_policy;
+    }
+
+    /* Get name of next container */
+    const char *get_next_container_name(char *path) {
+      snprintf(path, PATH_LEN, "/tmp/bbos_container_%d.con", containers_built++);
+      return (const char *)path;
     }
 
     /* Get size of BB object */
@@ -717,22 +725,30 @@ static void destructor_decorator(int) {
   BINPACKING_SHUTDOWN = true;
 }
 
+static void invoke_binpacking(BuddyServer *bs) {
+  std::list<binpack_segment_t> lst_binpack_segments;
+  /* we need to binpack */
+  bs->lock_server();
+  /* identify segments of objects to binpack. */
+  lst_binpack_segments = bs->get_objects();
+  bs->unlock_server();
+  char path[PATH_LEN];
+  if(lst_binpack_segments.size() > 0) {
+    bs->build_container(bs->get_next_container_name(path), lst_binpack_segments);
+  }
+}
+
 static void* binpacking_decorator(void *args) {
   BuddyServer *bs = (BuddyServer *)args;
   printf("\nStarting binpacking thread...\n");
-  std::list<binpack_segment_t> lst_binpack_segments;
   do {
     if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
-      /* we need to binpack */
-      bs->lock_server();
-      /* identify segments of objects to binpack. */
-      lst_binpack_segments = bs->get_objects();
-      assert(lst_binpack_segments.size() > 0);
-      bs->unlock_server();
-      bs->build_container("something", lst_binpack_segments);
+      invoke_binpacking(bs);
     }
     sleep(1);
   } while(!BINPACKING_SHUTDOWN);
+  /* pack whatever is remaining */
+  invoke_binpacking(bs);
   printf("Shutting down binpacking thread\n");
   BINPACKING_SHUTDOWN = false;
   pthread_exit(NULL);
