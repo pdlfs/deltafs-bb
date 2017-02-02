@@ -95,6 +95,7 @@ class BuddyServer
     std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
     size_t dirty_bbos_size;
+    size_t dirty_individual_size;
     size_t binpacking_threshold;
     binpacking_policy_t binpacking_policy;
     std::list<bbos_obj_t *> *lru_objects;
@@ -157,7 +158,7 @@ class BuddyServer
     std::list<binpack_segment_t> rr_with_cursor_binpacking_policy() {
       std::list<binpack_segment_t> segments;
       chunkid_t num_chunks = CONTAINER_SIZE / OBJ_CHUNK_SIZE;
-      while(num_chunks > 0) {
+      while(num_chunks > 0 && lru_objects->size() > 0) {
         bbos_obj_t *obj = lru_objects->front();
         lru_objects->pop_front();
         binpack_segment_t seg;
@@ -378,6 +379,7 @@ class BuddyServer
       pthread_join(binpacking_thread, NULL);
       assert(!BINPACKING_SHUTDOWN);
       assert(dirty_bbos_size == 0);
+      assert(dirty_individual_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
       std::map<std::string, std::list<container_segment_t *> *>::iterator it_obj_cont_map = object_container_map->begin();
       while(it_obj_cont_map != object_container_map->end()) {
@@ -451,11 +453,16 @@ class BuddyServer
           it_chunks++;
         }
         while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
-          //FIXME: write to DW in PFS_CHUNK_SIZE
+          //FIXME: write to DW in PFS_CHUNK_SIZE - https://github.com/hpc/libhio
           fwrite((*it_chunks)->buf, sizeof(char), OBJ_CHUNK_SIZE, fp);
           //FIXME: Ideally we would reduce dirty size after writing to DW,
           //       but here we reduce it when we choose to binpack itself.
-          dirty_bbos_size -= OBJ_CHUNK_SIZE;
+          switch (b_obj.obj->type) {
+            case WRITE_OPTIMIZED: dirty_bbos_size -= OBJ_CHUNK_SIZE;
+                                  break;
+            case READ_OPTIMIZED: dirty_individual_size -= OBJ_CHUNK_SIZE;
+                                 break;
+          }
           it_chunks++;
         }
 
@@ -592,7 +599,13 @@ class BuddyServer
         // add to head of LRU list for binpacking consideration
         lru_objects->push_front(obj);
       }
-      dirty_bbos_size += data_added;
+      switch (obj->type) {
+        case WRITE_OPTIMIZED: dirty_bbos_size += data_added;
+                              break;
+        case READ_OPTIMIZED: dirty_individual_size += data_added;
+                             break;
+      }
+      // dirty_bbos_size += data_added;
       pthread_mutex_unlock(&obj->mutex);
       return data_added;
     }
@@ -806,7 +819,7 @@ static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
   if(lst_binpack_segments.size() > 0) {
     bs->build_container(bs->get_next_container_name(path, type),
                         lst_binpack_segments);
-    //TODO: stage out DW file to lustre.
+    //TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
   }
 }
 
