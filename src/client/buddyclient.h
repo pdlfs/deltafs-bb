@@ -22,10 +22,13 @@ namespace bb {
 
 #define PATH_LEN 256
 
+enum mkobj_flag_t {READ_OPTIMIZED, WRITE_OPTIMIZED};
+
 enum ACTION {MKOBJ, APPEND, READ, GET_SIZE};
 
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
-    ((hg_const_string_t)(name)))
+    ((hg_const_string_t)(name))\
+    ((hg_bool_t)(type)))
 MERCURY_GEN_PROC(bbos_mkobj_out_t,
     ((hg_id_t)(status)))
 MERCURY_GEN_PROC(bbos_append_in_t,

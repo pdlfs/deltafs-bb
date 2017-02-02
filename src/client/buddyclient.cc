@@ -54,9 +54,12 @@ struct operation_details {
     bbos_read_out_t read_out;
     bbos_get_size_out_t get_size_out;
   } output;
-  void *buf;
-  size_t len;
-  off_t offset;
+  union {
+    bbos_mkobj_in_t mkobj_in;
+    bbos_append_in_t append_in;
+    bbos_read_in_t read_in;
+    bbos_get_size_in_t get_size_in;
+  } input;
 };
 
 static void* client_rpc_progress_fn(void *args) {
@@ -87,6 +90,7 @@ static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
   done++;
   pthread_cond_signal(&done_cond);
   pthread_mutex_unlock(&done_mutex);
+
   /* Complete */
   hg_ret = HG_Destroy(callback_info->info.forward.handle);
   assert(hg_ret == HG_SUCCESS);
@@ -94,17 +98,18 @@ static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
 }
 
 static hg_return_t issue_mkobj_rpc(const struct hg_cb_info *callback_info) {
-  bbos_mkobj_in_t in;
   hg_return_t hg_ret;
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, mkobj_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
+
   /* Fill input structure */
-  in.name = (const char *)op->name;
+  op->input.mkobj_in.name = (const char *)op->name;
+
   /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_mkobj_cb, op, &in);
+  hg_ret = HG_Forward(op->handle, bbos_mkobj_cb, op, &op->input.mkobj_in);
   assert(hg_ret == HG_SUCCESS);
   return ((hg_return_t)NA_SUCCESS);
 }
@@ -118,6 +123,7 @@ static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
   done++;
   pthread_cond_signal(&done_cond);
   pthread_mutex_unlock(&done_mutex);
+
   /* Complete */
   hg_ret = HG_Destroy(callback_info->info.forward.handle);
   assert(hg_ret == HG_SUCCESS);
@@ -125,7 +131,7 @@ static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
 }
 
 static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
-  bbos_append_in_t in;
+  // bbos_append_in_t in;
   hg_return_t hg_ret;
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   server_addr = (hg_addr_t) callback_info->info.lookup.addr;
@@ -134,12 +140,10 @@ static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
   assert(op->handle);
 
   /* Fill input structure */
-  in.name = (const char *)op->name;
-  hg_ret = HG_Bulk_create(hg_class, 1, &(op->buf), &(op->len), HG_BULK_READ_ONLY, &(in.bulk_handle));
-  assert(hg_ret == HG_SUCCESS);
+  op->input.append_in.name = (const char *)op->name;
 
   /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_append_cb, op, &in);
+  hg_ret = HG_Forward(op->handle, bbos_append_cb, op, &op->input.append_in);
   assert(hg_ret == HG_SUCCESS);
   return ((hg_return_t)NA_SUCCESS);
 }
@@ -153,6 +157,7 @@ static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
   done++;
   pthread_cond_signal(&done_cond);
   pthread_mutex_unlock(&done_mutex);
+
   /* Complete */
   hg_ret = HG_Destroy(callback_info->info.forward.handle);
   assert(hg_ret == HG_SUCCESS);
@@ -160,7 +165,6 @@ static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
 }
 
 static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
-  bbos_read_in_t in;
   hg_return_t hg_ret;
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   server_addr = (hg_addr_t) callback_info->info.lookup.addr;
@@ -169,18 +173,11 @@ static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
   assert(op->handle);
 
   /* Fill input structure */
-  in.name = (const char *) op->name;
-  in.offset = (off_t) op->offset;
-  in.size = (size_t) op->len;
-
-  op->buf = (void *) calloc (1, op->len);
-
-  hg_ret = HG_Bulk_create(hg_class, 1, &(op->buf), &(op->len),
-            HG_BULK_READWRITE, &(in.bulk_handle));
+  op->input.read_in.name = (const char *) op->name;
   assert(hg_ret == HG_SUCCESS);
 
   /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_read_cb, op, &in);
+  hg_ret = HG_Forward(op->handle, bbos_read_cb, op, &op->input.read_in);
   assert(hg_ret == HG_SUCCESS);
   return ((hg_return_t)NA_SUCCESS);
 }
@@ -194,6 +191,7 @@ static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
   done++;
   pthread_cond_signal(&done_cond);
   pthread_mutex_unlock(&done_mutex);
+
   /* Complete */
   hg_ret = HG_Destroy(callback_info->info.forward.handle);
   assert(hg_ret == HG_SUCCESS);
@@ -201,17 +199,18 @@ static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
 }
 
 static hg_return_t issue_get_size_rpc(const struct hg_cb_info *callback_info) {
-  bbos_mkobj_in_t in;
   hg_return_t hg_ret;
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, get_size_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
+
   /* Fill input structure */
-  in.name = (const char *)op->name;
+  op->input.get_size_in.name = (const char *)op->name;
+
   /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_get_size_cb, op, &in);
+  hg_ret = HG_Forward(op->handle, bbos_get_size_cb, op, &op->input.get_size_in);
   assert(hg_ret == HG_SUCCESS);
   return ((hg_return_t)NA_SUCCESS);
 }
@@ -247,6 +246,7 @@ class BuddyClient
       hg_class = NULL;
 
       this->port = port;
+
       /* start mercury and register RPC */
       int ret;
 
@@ -273,13 +273,13 @@ class BuddyClient
       assert(ret == HG_SUCCESS);
     }
 
-    int mkobj(const char *name) {
+    int mkobj(const char *name, mkobj_flag_t type=WRITE_OPTIMIZED) {
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval = -1;
-      op->buf = NULL;
-      op->len = 0;
       op->action = MKOBJ;
+      op->input.mkobj_in.name = (const char *) op->name;
+      op->input.mkobj_in.type = (hg_bool_t) type;
       run_my_rpc(op);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
@@ -295,10 +295,12 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       size_t retval = 0;
-      op->buf = (void *) malloc (len);
-      memcpy(op->buf, buf, len);
-      op->len = len;
-      assert(op->buf);
+      void *alloc_buf = (void *) calloc (1, len);
+      memcpy(alloc_buf, buf, len);
+      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &alloc_buf, &(len),
+                            HG_BULK_READ_ONLY,
+                            &(op->input.append_in.bulk_handle));
+      assert(hg_ret == HG_SUCCESS);
       op->action = APPEND;
       run_my_rpc(op);
       pthread_mutex_lock(&done_mutex);
@@ -307,7 +309,7 @@ class BuddyClient
       done--;
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.append_out.size;
-      free(op->buf);
+      free(alloc_buf);
       free(op);
       return retval;
     }
@@ -316,8 +318,14 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval;
-      op->len = len;
-      op->offset = offset;
+      void *alloc_buf = (void *) calloc (1, len);
+      op->input.read_in.offset = (hg_size_t) offset;
+      op->input.read_in.size = (hg_size_t) len;
+      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &alloc_buf,
+                            &(op->input.read_in.size),
+                            HG_BULK_READWRITE,
+                            &(op->input.read_in.bulk_handle));
+      assert(hg_ret == HG_SUCCESS);
       op->action = READ;
       run_my_rpc(op);
       pthread_mutex_lock(&done_mutex);
@@ -326,8 +334,8 @@ class BuddyClient
       done--;
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.read_out.size;
-      memcpy(buf, op->buf, retval);
-      free(op->buf);
+      memcpy(buf, alloc_buf, retval);
+      free(alloc_buf);
       free(op);
       return retval;
     }
@@ -336,8 +344,6 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval = -1;
-      op->buf = NULL;
-      op->len = 0;
       op->action = GET_SIZE;
       run_my_rpc(op);
       pthread_mutex_lock(&done_mutex);
