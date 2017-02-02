@@ -98,6 +98,7 @@ class BuddyServer
     size_t binpacking_threshold;
     binpacking_policy_t binpacking_policy;
     std::list<bbos_obj_t *> *lru_objects;
+    std::list<bbos_obj_t *> *individual_objects;
     pthread_t binpacking_thread;
     pthread_t progress_thread;
     struct sigaction sa;
@@ -140,8 +141,13 @@ class BuddyServer
       while(it_map != object_map->end()) {
         binpack_segment_t seg;
         seg.obj = (*it_map).second;
-        seg.start_chunk = 0;
+        if(seg.obj->type == READ_OPTIMIZED) {
+          it_map++;
+          continue;
+        }
+        seg.start_chunk = seg.obj->cursor;
         seg.end_chunk = seg.obj->lst_chunks->size();
+        seg.obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * OBJ_CHUNK_SIZE;
         segments.push_back(seg);
         it_map++;
       }
@@ -168,6 +174,23 @@ class BuddyServer
         if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
           lru_objects->push_back(obj);
         }
+        segments.push_back(seg);
+        num_chunks -= (seg.end_chunk - seg.start_chunk);
+      }
+      return segments;
+    }
+
+    std::list<binpack_segment_t> get_all_segments() {
+      std::list<binpack_segment_t> segments;
+      bbos_obj_t *obj = individual_objects->front();
+      individual_objects->pop_front();
+      chunkid_t num_chunks = obj->dirty_size / OBJ_CHUNK_SIZE;
+      while(num_chunks > 0) {
+        binpack_segment_t seg;
+        seg.obj = obj;
+        seg.start_chunk = obj->cursor;
+        seg.end_chunk = obj->lst_chunks->size();
+        obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * OBJ_CHUNK_SIZE;
         segments.push_back(seg);
         num_chunks -= (seg.end_chunk - seg.start_chunk);
       }
@@ -260,18 +283,22 @@ class BuddyServer
       }
     }
 
-    bbos_obj_t *create_bbos_cache_entry(const char *name) {
+    bbos_obj_t *create_bbos_cache_entry(const char *name, mkobj_flag_t type) {
       bbos_obj_t *obj = new bbos_obj_t;
       obj->lst_chunks = new std::list<chunk_info_t *>;
       obj->last_chunk_flushed = 0;
       obj->dirty_size = 0;
       obj->size = 0;
+      obj->type = type;
       obj->cursor = 0;
       pthread_mutex_init(&obj->mutex, NULL);
       pthread_mutex_lock(&obj->mutex);
       sprintf(obj->name, "%s", name);
       std::map<std::string, bbos_obj_t*>::iterator it_map = object_map->begin();
       object_map->insert(it_map, std::pair<std::string, bbos_obj_t*>(std::string(obj->name), obj));
+      if(type == READ_OPTIMIZED) {
+        individual_objects->push_back(obj);
+      }
       return obj;
     }
 
@@ -305,6 +332,7 @@ class BuddyServer
       bs_obj = (void *) this;
       binpacking_threshold = threshold;
       lru_objects = new std::list<bbos_obj_t *>;
+      individual_objects = new std::list<bbos_obj_t *>;
 
       pthread_mutex_init(&bbos_mutex, NULL);
       if(input_manifest_file != NULL) {
@@ -377,24 +405,31 @@ class BuddyServer
       pthread_mutex_destroy(&bbos_mutex);
       delete object_map;
       delete lru_objects;
+      delete individual_objects;
       // printf("end of destuctor\n");
     }
 
-    std::list<binpack_segment_t> get_objects() {
-      switch (binpacking_policy) {
-        case RR_WITH_CURSOR: return rr_with_cursor_binpacking_policy();
-        case ALL: return all_binpacking_policy();
-      }
-      if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
-        return all_binpacking_policy();
+    std::list<binpack_segment_t> get_objects(container_flag_t type=COMBINED) {
+      switch (type) {
+        case COMBINED: switch (binpacking_policy) {
+                         case RR_WITH_CURSOR: return rr_with_cursor_binpacking_policy();
+                         case ALL: return all_binpacking_policy();
+                       }
+                       if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
+                         return all_binpacking_policy();
+                       }
+                       break;
+
+        case INDIVIDUAL: return get_all_segments();
       }
       std::list<binpack_segment_t> segments;
       printf("Invalid binpacking policy selected!\n");
       return segments;
     }
 
-    int build_container(const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
-      FILE *fp = fopen(c_name, "w+");
+    int build_container(const char *c_name,
+      std::list<binpack_segment_t> lst_binpack_segments) {
+      FILE *fp = fopen(c_name, "w+");;
       assert(fp != NULL);
       binpack_segment_t b_obj;
       off_t c_offset = 0;
@@ -418,7 +453,8 @@ class BuddyServer
         while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
           //FIXME: write to DW in PFS_CHUNK_SIZE
           fwrite((*it_chunks)->buf, sizeof(char), OBJ_CHUNK_SIZE, fp);
-          b_obj.obj->dirty_size -= OBJ_CHUNK_SIZE;
+          //FIXME: Ideally we would reduce dirty size after writing to DW,
+          //       but here we reduce it when we choose to binpack itself.
           dirty_bbos_size -= OBJ_CHUNK_SIZE;
           it_chunks++;
         }
@@ -446,9 +482,9 @@ class BuddyServer
       return 0;
     }
 
-    int mkobj(const char *name) {
+    int mkobj(const char *name, mkobj_flag_t type=WRITE_OPTIMIZED) {
       // Initialize an in-memory object
-      if(create_bbos_cache_entry(name) == NULL) {
+      if(create_bbos_cache_entry(name, type) == NULL) {
         return -BB_ERROBJ;
       }
       std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->find(std::string(name));
@@ -469,6 +505,11 @@ class BuddyServer
       return dirty_bbos_size;
     }
 
+    /* Get number of individual objects. */
+    uint32_t get_individual_obj_count() {
+      return individual_objects->size();
+    }
+
     /* Get binpacking threshold */
     size_t get_binpacking_threshold() {
       return binpacking_threshold;
@@ -480,9 +521,14 @@ class BuddyServer
     }
 
     /* Get name of next container */
-    const char *get_next_container_name(char *path) {
+    const char *get_next_container_name(char *path, container_flag_t type) {
       //TODO: get container name from a microservice
-      snprintf(path, PATH_LEN, "/tmp/bbos_container_%d.con", containers_built++);
+      switch (type) {
+        case COMBINED: snprintf(path, PATH_LEN, "/tmp/bbos_container_%d.con", containers_built++);
+                       break;
+        case INDIVIDUAL: snprintf(path, PATH_LEN, "/tmp/bbos_container_%d.con.individual", containers_built++);
+                         break;
+      }
       return (const char *)path;
     }
 
@@ -492,7 +538,7 @@ class BuddyServer
       if(it_obj_map == object_map->end()) {
         std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(name));
         assert(it_map != object_container_map->end());
-        bbos_obj_t *obj = create_bbos_cache_entry(name);
+        bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED); //FIXME: place correct object type
         std::list<container_segment_t *> *lst_segments = it_map->second;
         std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
         while(it_segs != it_map->second->end()) {
@@ -542,7 +588,7 @@ class BuddyServer
       data_added += add_data(last_chunk, buf, data_size_for_chunk);
       obj->size += data_added;
       obj->dirty_size += data_added;
-      if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
+      if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD && obj->type == WRITE_OPTIMIZED) {
         // add to head of LRU list for binpacking consideration
         lru_objects->push_front(obj);
       }
@@ -605,7 +651,7 @@ static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
   bbos_mkobj_in_t in;
   int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
-  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name);
+  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t) in.type);
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
@@ -749,16 +795,17 @@ static void destructor_decorator(int) {
   BINPACKING_SHUTDOWN = true;
 }
 
-static void invoke_binpacking(BuddyServer *bs) {
+static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
   std::list<binpack_segment_t> lst_binpack_segments;
   /* we need to binpack */
   bs->lock_server();
   /* identify segments of objects to binpack. */
-  lst_binpack_segments = bs->get_objects();
+  lst_binpack_segments = bs->get_objects(type);
   bs->unlock_server();
   char path[PATH_LEN];
   if(lst_binpack_segments.size() > 0) {
-    bs->build_container(bs->get_next_container_name(path), lst_binpack_segments);
+    bs->build_container(bs->get_next_container_name(path, type),
+                        lst_binpack_segments);
     //TODO: stage out DW file to lustre.
   }
 }
@@ -768,12 +815,15 @@ static void* binpacking_decorator(void *args) {
   printf("\nStarting binpacking thread...\n");
   do {
     if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
-      invoke_binpacking(bs);
+      invoke_binpacking(bs, COMBINED);
     }
     sleep(1);
   } while(!BINPACKING_SHUTDOWN);
   /* pack whatever is remaining */
-  invoke_binpacking(bs);
+  invoke_binpacking(bs, COMBINED);
+  while (bs->get_individual_obj_count() > 0) {
+    invoke_binpacking(bs, INDIVIDUAL);
+  }
   printf("Shutting down binpacking thread\n");
   BINPACKING_SHUTDOWN = false;
   pthread_exit(NULL);

@@ -24,7 +24,8 @@ namespace pdlfs {
 namespace bb {
 
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
-    ((hg_const_string_t)(name)))
+    ((hg_const_string_t)(name))\
+    ((hg_bool_t)(type)))
 MERCURY_GEN_PROC(bbos_mkobj_out_t,
     ((hg_id_t)(status)))
 MERCURY_GEN_PROC(bbos_append_in_t,
@@ -61,6 +62,8 @@ typedef uint32_t chunkid_t;
 #define BB_ENOCONTAINER 7
 #define BB_ERROBJ 8
 
+enum mkobj_flag_t {READ_OPTIMIZED, WRITE_OPTIMIZED};
+enum container_flag_t {COMBINED, INDIVIDUAL};
 enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
@@ -80,6 +83,7 @@ typedef struct {
   //oid_t id;
   char name[PATH_LEN];
   size_t size;
+  mkobj_flag_t type;
   std::list<chunk_info_t *> *lst_chunks; // list of chunks in BBOS object
   chunkid_t last_chunk_flushed;
   size_t dirty_size;
