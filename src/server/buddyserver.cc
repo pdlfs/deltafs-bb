@@ -759,6 +759,7 @@ static void invoke_binpacking(BuddyServer *bs) {
   char path[PATH_LEN];
   if(lst_binpack_segments.size() > 0) {
     bs->build_container(bs->get_next_container_name(path), lst_binpack_segments);
+    //TODO: stage out DW file to lustre.
   }
 }
 
