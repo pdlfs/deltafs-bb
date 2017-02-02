@@ -665,6 +665,7 @@ static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
   HG_Destroy(read_info->handle);
   free(read_info);
   (void)ret;
+  return HG_SUCCESS;
 }
 
 static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
