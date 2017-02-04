@@ -20,6 +20,7 @@
 #include <aio.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/time.h>
 #include "buddyserver.h"
 
 namespace pdlfs {
@@ -48,6 +49,25 @@ static hg_id_t server_mkobj_rpc_id;
 static hg_id_t server_append_rpc_id;
 static hg_id_t server_read_rpc_id;
 static hg_id_t server_get_size_rpc_id;
+
+/* metric calculation code */
+static uint64_t chunk_latency_hist[10];
+static timespec chunk_ts_before;
+static timespec chunk_ts_after;
+static timespec container_ts_before;
+static timespec container_ts_after;
+static timespec append_ts_before;
+static timespec append_ts_after;
+static timespec binpack_ts_before;
+static timespec binpack_ts_after;
+static uint64_t num_chunks_written = 0;
+static uint64_t num_containers_written = 0;
+static uint64_t num_appends = 0;
+static uint64_t num_binpacks = 0;
+static double avg_chunk_response_time = 0.0;
+static double avg_container_response_time = 0.0;
+static double avg_append_latency = 0.0;
+static double avg_binpack_time = 0.0;
 
 static hg_thread_pool_t *thread_pool;
 
@@ -87,6 +107,18 @@ static void* rpc_progress_fn(void* rpc_index)
     }
 
     return(NULL);
+}
+
+static void timespec_diff(struct timespec *start, struct timespec *stop,
+                   struct timespec *result) {
+    if ((stop->tv_nsec - start->tv_nsec) < 0) {
+        result->tv_sec = stop->tv_sec - start->tv_sec - 1;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
+    } else {
+        result->tv_sec = stop->tv_sec - start->tv_sec;
+        result->tv_nsec = stop->tv_nsec - start->tv_nsec;
+    }
+    return;
 }
 
 class BuddyServer
@@ -395,6 +427,16 @@ class BuddyServer
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
+      printf("============= BBOS MEASUREMENTS ============\n");
+      printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
+      printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
+      printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency);
+      printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n", avg_binpack_time);
+      printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %lu\n", PFS_CHUNK_SIZE, num_chunks_written);
+      printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %lu\n", CONTAINER_SIZE, num_containers_written);
+      printf("NUMBER OF %lu BYTE APPENDS = %lu\n", OBJ_CHUNK_SIZE, num_appends);
+      printf("NUMBER OF BINPACKINGS DONE = %lu\n", num_binpacks);
+      printf("============================================\n");
       std::map<std::string, std::list<container_segment_t *> *>::iterator it_obj_cont_map = object_container_map->begin();
       while(it_obj_cont_map != object_container_map->end()) {
         std::list<container_segment_t *>::iterator it_c_segs = it_obj_cont_map->second->begin();
@@ -446,11 +488,14 @@ class BuddyServer
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
       snprintf(c_path, PATH_LEN, "%s%s", dw_mount_point, c_name);
-      FILE *fp = fopen(c_path, "w+");;
-      assert(fp != NULL);
       binpack_segment_t b_obj;
       size_t data_written = 0;
       off_t c_offset = 0;
+      timespec chunk_diff_ts;
+      timespec container_diff_ts;
+      clock_gettime(CLOCK_REALTIME, &container_ts_before);
+      FILE *fp = fopen(c_path, "w+");;
+      assert(fp != NULL);
       std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
       fprintf(fp, "%lu\n", lst_binpack_segments.size());
       while(it_bpack != lst_binpack_segments.end()) {
@@ -470,7 +515,14 @@ class BuddyServer
         }
         while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
           //FIXME: write to DW in PFS_CHUNK_SIZE - https://github.com/hpc/libhio
+          clock_gettime(CLOCK_REALTIME, &chunk_ts_before);
           data_written = fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
+          clock_gettime(CLOCK_REALTIME, &chunk_ts_after);
+          num_chunks_written += 1;
+          timespec_diff(&chunk_ts_before, &chunk_ts_after, &chunk_diff_ts);
+          avg_chunk_response_time *= (num_chunks_written - 1);
+          avg_chunk_response_time += ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
+          avg_chunk_response_time /= num_chunks_written;
           assert(data_written == (*it_chunks)->size);
           free((*it_chunks)->buf);
 
@@ -499,6 +551,12 @@ class BuddyServer
         it_bpack++;
       }
       fclose(fp);
+      clock_gettime(CLOCK_REALTIME, &container_ts_after);
+      num_containers_written += 1;
+      timespec_diff(&container_ts_before, &container_ts_after, &container_diff_ts);
+      avg_container_response_time *= (num_containers_written - 1);
+      avg_container_response_time += ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
+      avg_container_response_time /= num_containers_written;
       return 0;
     }
 
@@ -682,11 +740,19 @@ static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
 static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
   struct bbos_append_cb *append_info = (struct bbos_append_cb*)info->arg;
   bbos_append_out_t out;
+  timespec append_diff_ts;
   BuddyServer *bs = (BuddyServer *) bs_obj;
   char name[PATH_LEN];
   int ret;
   size_t len = 0;
+  clock_gettime(CLOCK_REALTIME, &append_ts_before);
   out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
+  clock_gettime(CLOCK_REALTIME, &append_ts_after);
+  num_appends += 1;
+  timespec_diff(&append_ts_before, &append_ts_after, &append_diff_ts);
+  avg_append_latency *= (num_appends - 1);
+  avg_append_latency += ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
+  avg_append_latency /= num_appends;
   ret = HG_Respond(append_info->handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
@@ -820,7 +886,15 @@ static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
   /* we need to binpack */
   bs->lock_server();
   /* identify segments of objects to binpack. */
+  timespec binpack_diff_ts;
+  clock_gettime(CLOCK_REALTIME, &binpack_ts_before);
   lst_binpack_segments = bs->get_objects(type);
+  clock_gettime(CLOCK_REALTIME, &binpack_ts_after);
+  num_binpacks += 1;
+  timespec_diff(&binpack_ts_before, &binpack_ts_after, &binpack_diff_ts);
+  avg_binpack_time *= (num_binpacks - 1);
+  avg_binpack_time += ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
+  avg_binpack_time /= num_binpacks;
   bs->unlock_server();
   char path[PATH_LEN];
   if(lst_binpack_segments.size() > 0) {
