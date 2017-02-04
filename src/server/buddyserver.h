@@ -89,6 +89,7 @@ typedef struct {
   size_t dirty_size;
   pthread_mutex_t mutex;
   chunkid_t cursor;
+  bool marked_for_packing;
 } bbos_obj_t;
 
 typedef struct {
