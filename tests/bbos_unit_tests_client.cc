@@ -27,21 +27,33 @@ void read_data(BuddyClient *bc, const char *name, char *output, int num_chars) {
 }
 
 int main(int argc, char **argv) {
-  char input[8] = "12345";
-  char output[8] = "";
+  // char output[8] = "";
+  char *input = (char *) malloc (sizeof(char) * 8);
+  for(int i=0; i<8; i++) {
+    input[i] = 'a';
+  }
   int ret;
-  if(argc < 2) {
+  size_t size = 0;
+  if(argc < 3) {
     printf("Not enough arguments for testing client.\n");
     exit(1);
   }
   BuddyClient *bc = new BuddyClient();
   ret = bc->mkobj(argv[1]);
-  write_data(bc, argv[1], input, 6);
+  write_data(bc, argv[1], input, 8);
   assert(ret == 0);
-  read_data(bc, argv[1], output, 6);
-  printf("data read = from object %s = %s\n", argv[1], output);
-  size_t size = bc->get_size(argv[1]);
+  // read_data(bc, argv[1], output, 6);
+  // printf("data read = from object %s = %s\n", argv[1], output);
+  size = bc->get_size(argv[1]);
   printf("size of object %s = %lu\n", argv[1], size);
+
+  ret = bc->mkobj(argv[2], READ_OPTIMIZED);
+  write_data(bc, argv[2], input, 8);
+  assert(ret == 0);
+  // read_data(bc, argv[2], output, 6);
+  // printf("data read = from object %s = %s\n", argv[2], output);
+  size = bc->get_size(argv[2]);
+  printf("size of object %s = %lu\n", argv[2], size);
   delete bc;
   return 0;
 }
