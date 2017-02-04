@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
     printf("Not enough arguments for testing client.\n");
     exit(1);
   }
-  BuddyClient *bc = new BuddyClient();
+  BuddyClient *bc = new BuddyClient("127.0.0.1", 1234);
   ret = bc->mkobj(argv[1]);
   write_data(bc, argv[1], input, 8);
   assert(ret == 0);

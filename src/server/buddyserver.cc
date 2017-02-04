@@ -350,6 +350,8 @@ class BuddyServer
   public:
     BuddyServer(const char *output_manifest_file, // final manifest location
                 const char *dw_mount_point, // DW mount point
+                const char *server_ip_addr, // IP address of the BBOS server
+                int port, // port on which BBOS server is listening
                 size_t pfs_chunk_size=8388608, // 8 MB output (DW) chunk size
                 size_t obj_chunk_size=2097152, // 2 MB input chunk size
                 int parallelism=32, // default 32 threads
@@ -393,7 +395,9 @@ class BuddyServer
         }
       }
 
-      server_network_class = NA_Initialize("tcp://localhost:1240", NA_TRUE);
+      char server_url[PATH_LEN];
+      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip_addr, port);
+      server_network_class = NA_Initialize(server_url, NA_TRUE);
       assert(server_network_class);
 
       server_hg_class = HG_Init_na(server_network_class);

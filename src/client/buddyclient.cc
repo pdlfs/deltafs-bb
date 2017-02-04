@@ -44,6 +44,8 @@ static hg_id_t read_rpc_id;
 static hg_id_t get_size_rpc_id;
 static hg_bool_t hg_progress_shutdown_flag;
 
+static char server_url[PATH_LEN];
+
 struct operation_details {
   char name[256];
   hg_handle_t handle;
@@ -219,13 +221,13 @@ static void run_my_rpc(struct operation_details *op)
 {
     na_return_t ret;
     switch (op->action) {
-      case MKOBJ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_mkobj_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+      case MKOBJ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_mkobj_rpc, op, server_url, HG_OP_ID_IGNORE);
                   break;
-      case APPEND: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_append_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+      case APPEND: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_append_rpc, op, server_url, HG_OP_ID_IGNORE);
                    break;
-      case READ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_read_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+      case READ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_read_rpc, op, server_url, HG_OP_ID_IGNORE);
                  break;
-      case GET_SIZE: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_get_size_rpc, op, "tcp://localhost:1240", HG_OP_ID_IGNORE);
+      case GET_SIZE: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_get_size_rpc, op, server_url, HG_OP_ID_IGNORE);
                      break;
     }
     assert(ret == NA_SUCCESS);
@@ -236,19 +238,20 @@ static void run_my_rpc(struct operation_details *op)
 class BuddyClient
 {
   private:
-    int port;
     hg_thread_t progress_thread;
 
   public:
-    BuddyClient(int port=1234) {
+    BuddyClient(const char *server_ip_addr, // IP address of the BBOS server
+                int port // port on which server is listening
+              ) {
       network_class = NULL;
       hg_context = NULL;
       hg_class = NULL;
 
-      this->port = port;
-
       /* start mercury and register RPC */
       int ret;
+
+      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip_addr, port);
 
       network_class = NA_Initialize("tcp", NA_FALSE);
       assert(network_class);
