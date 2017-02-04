@@ -333,7 +333,7 @@ class BuddyServer
       sigfillset(&sa.sa_mask);
       sigaction(SIGINT, &sa, NULL);
 
-      strncpy(this->output_manifest, output_manifest_file, PATH_LEN);
+      snprintf(this->output_manifest, PATH_LEN, "%s%s", dw_mount_point, output_manifest_file);
       strncpy(this->dw_mount_point, dw_mount_point, PATH_LEN);
 
       OBJ_CHUNK_SIZE = obj_chunk_size;
@@ -444,7 +444,9 @@ class BuddyServer
 
     int build_container(const char *c_name,
       std::list<binpack_segment_t> lst_binpack_segments) {
-      FILE *fp = fopen(c_name, "w+");;
+      char c_path[PATH_LEN];
+      snprintf(c_path, PATH_LEN, "%s%s", dw_mount_point, c_name);
+      FILE *fp = fopen(c_path, "w+");;
       assert(fp != NULL);
       binpack_segment_t b_obj;
       size_t data_written = 0;
@@ -542,9 +544,9 @@ class BuddyServer
     const char *get_next_container_name(char *path, container_flag_t type) {
       //TODO: get container name from a microservice
       switch (type) {
-        case COMBINED: snprintf(path, PATH_LEN, "%sbbos_%d.con.write", dw_mount_point, containers_built++);
+        case COMBINED: snprintf(path, PATH_LEN, "bbos_%d.con.write", containers_built++);
                        break;
-        case INDIVIDUAL: snprintf(path, PATH_LEN, "%sbbos_%d.con.read", dw_mount_point, containers_built++);
+        case INDIVIDUAL: snprintf(path, PATH_LEN, "bbos_%d.con.read", containers_built++);
                          break;
       }
       return (const char *)path;
