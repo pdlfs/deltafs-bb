@@ -141,6 +141,7 @@ class BuddyServer
     pthread_mutex_t bbos_mutex;
     int containers_built;
     char output_manifest[PATH_LEN];
+    char server_url[PATH_LEN];
     int port;
 
     chunk_info_t *make_chunk(chunkid_t id) {
@@ -365,8 +366,7 @@ class BuddyServer
                   break;
           case 2: port = atoi(knob);
                   break;
-          case 3: char server_url[PATH_LEN];
-                  snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
+          case 3: snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
                   server_network_class = NA_Initialize(server_url, NA_TRUE);
                   assert(server_network_class);
                   break;
@@ -433,7 +433,7 @@ class BuddyServer
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
-      printf("============= BBOS MEASUREMENTS ============\n");
+      printf("============= BBOS MEASUREMENTS of %s ============\n", server_url);
       printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
       printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
       printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency);
