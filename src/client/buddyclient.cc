@@ -239,20 +239,32 @@ class BuddyClient
 {
   private:
     hg_thread_t progress_thread;
+    int port;
 
   public:
-    BuddyClient(const char *server_ip_addr, // IP address of the BBOS server
-                int port // port on which server is listening
-              ) {
+    BuddyClient(const char *config_file) {
+      assert(config_file != NULL);
+      std::ifstream configuration(config_file);
+      if(!configuration) {
+        exit(-BB_CONFIG_ERROR);
+      }
+      int i = 0;
+      const char *out_manifest;
+      char knob[PATH_LEN];
+      while(configuration >> knob) {
+        switch (i) {
+          case 0: port = atoi(knob);
+                  break;
+          case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
+                  break;
+        }
+        i++;
+      }
       network_class = NULL;
       hg_context = NULL;
       hg_class = NULL;
 
       /* start mercury and register RPC */
-      int ret;
-
-      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip_addr, port);
-
       network_class = NA_Initialize("tcp", NA_FALSE);
       assert(network_class);
 

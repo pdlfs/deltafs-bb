@@ -141,7 +141,7 @@ class BuddyServer
     pthread_mutex_t bbos_mutex;
     int containers_built;
     char output_manifest[PATH_LEN];
-    int parallelism;
+    int port;
 
     chunk_info_t *make_chunk(chunkid_t id) {
       chunk_info_t *new_chunk = new chunk_info_t;
@@ -348,57 +348,60 @@ class BuddyServer
     }
 
   public:
-    BuddyServer(const char *output_manifest_file, // final manifest location
-                const char *dw_mount_point, // DW mount point
-                const char *server_ip_addr, // IP address of the BBOS server
-                int port, // port on which BBOS server is listening
-                size_t pfs_chunk_size=8388608, // 8 MB output (DW) chunk size
-                size_t obj_chunk_size=2097152, // 2 MB input chunk size
-                int parallelism=32, // default 32 threads
-                size_t threshold=10737418240, // 10 GB
-                binpacking_policy_t policy=ALL, // default policy is all objs
-                size_t obj_dirty_threshold=2147483648, // dirty threshold
-                size_t container_size=10737418240, // container size on PFS
-                const char *input_manifest_file = NULL // bootstrap from manifest
-               ) {
+    BuddyServer(const char *config_file) {
+      assert(config_file != NULL);
+      std::ifstream configuration(config_file);
+      if(!configuration) {
+        exit(-BB_CONFIG_ERROR);
+      }
+      int i = 0;
+      const char *out_manifest;
+      char knob[PATH_LEN];
+      while(configuration >> knob) {
+        switch (i) {
+          case 0: strncpy(dw_mount_point, knob, PATH_LEN); // DW mount point
+                  break;
+          case 1: snprintf(output_manifest, PATH_LEN, "%s%s", dw_mount_point, knob); // output manifest file
+                  break;
+          case 2: port = atoi(knob);
+                  break;
+          case 3: char server_url[PATH_LEN];
+                  snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
+                  server_network_class = NA_Initialize(server_url, NA_TRUE);
+                  assert(server_network_class);
+                  break;
+          case 4: PFS_CHUNK_SIZE = strtoul(knob, NULL, 0);
+                  break;
+          case 5: OBJ_CHUNK_SIZE = strtoul(knob, NULL, 0);
+                  break;
+          case 6: hg_thread_pool_init(atoi(knob), &thread_pool);
+                  break;
+          case 7: binpacking_threshold = strtoul(knob, NULL, 0);
+                  break;
+          case 8: binpacking_policy = (binpacking_policy_t) atoi(knob);
+                  break;
+          case 9: OBJECT_DIRTY_THRESHOLD = strtoul(knob, NULL, 0);
+                  break;
+          case 10: CONTAINER_SIZE = strtoul(knob, NULL, 0);
+                  break;
+        }
+        i++;
+      }
+
       /* signal handling to capture ctrl + c */
       memset( &sa, 0, sizeof(sa) );
       sa.sa_handler = destructor_decorator;
       sigfillset(&sa.sa_mask);
       sigaction(SIGINT, &sa, NULL);
 
-      snprintf(this->output_manifest, PATH_LEN, "%s%s", dw_mount_point, output_manifest_file);
-      strncpy(this->dw_mount_point, dw_mount_point, PATH_LEN);
-
-      OBJ_CHUNK_SIZE = obj_chunk_size;
-      PFS_CHUNK_SIZE = pfs_chunk_size;
-      OBJECT_DIRTY_THRESHOLD = obj_dirty_threshold;
-      CONTAINER_SIZE = container_size;
-      binpacking_policy = policy;
       object_map = new std::map<std::string, bbos_obj_t *>;
       object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
       dirty_bbos_size = 0;
       bs_obj = (void *) this;
-      binpacking_threshold = threshold;
       lru_objects = new std::list<bbos_obj_t *>;
       individual_objects = new std::list<bbos_obj_t *>;
 
       pthread_mutex_init(&bbos_mutex, NULL);
-      if(input_manifest_file != NULL) {
-        std::ifstream manifest(input_manifest_file);
-        if(!manifest) {
-          exit(BB_ENOMANIFEST);
-        }
-        char container_name[PATH_LEN];
-        while(manifest >> container_name) {
-          build_object_container_map(container_name);
-        }
-      }
-
-      char server_url[PATH_LEN];
-      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip_addr, port);
-      server_network_class = NA_Initialize(server_url, NA_TRUE);
-      assert(server_network_class);
 
       server_hg_class = HG_Init_na(server_network_class);
       assert(server_hg_class);
@@ -413,7 +416,6 @@ class BuddyServer
       server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler_decorator);
       server_get_size_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_get_size_handler_decorator);
 
-      hg_thread_pool_init(parallelism, &thread_pool);
       containers_built = 0;
       BINPACKING_SHUTDOWN = false;
       pthread_create(&binpacking_thread, NULL, binpacking_decorator, this);

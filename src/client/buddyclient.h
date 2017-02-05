@@ -26,6 +26,8 @@ enum mkobj_flag_t {READ_OPTIMIZED, WRITE_OPTIMIZED};
 
 enum ACTION {MKOBJ, APPEND, READ, GET_SIZE};
 
+#define BB_CONFIG_ERROR 3
+
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
     ((hg_const_string_t)(name))\
     ((hg_bool_t)(type)))
