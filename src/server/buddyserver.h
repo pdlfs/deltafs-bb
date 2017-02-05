@@ -90,6 +90,7 @@ typedef struct {
   pthread_mutex_t mutex;
   chunkid_t cursor;
   bool marked_for_packing;
+  chunkid_t last_full_chunk;
 } bbos_obj_t;
 
 typedef struct {

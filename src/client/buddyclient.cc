@@ -25,6 +25,7 @@
 #include <mercury_hl_macros.h>
 #include <mercury_proc_string.h>
 #include <mercury_config.h>
+#include <map>
 #include "buddyclient.h"
 
 namespace pdlfs {
@@ -43,6 +44,7 @@ static hg_id_t append_rpc_id;
 static hg_id_t read_rpc_id;
 static hg_id_t get_size_rpc_id;
 static hg_bool_t hg_progress_shutdown_flag;
+static std::map<std::string, uint64_t> pending_replies;
 
 static char server_url[PATH_LEN];
 
@@ -86,6 +88,13 @@ static hg_return_t bbos_rpc_handler(hg_handle_t handle) {
 static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
+  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
+  // uint64_t replies = it_map->second;
+  // pending_replies.erase(it_map);
+  // replies -= 1;
+  // if(replies > 0) {
+  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
+  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.mkobj_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -119,8 +128,16 @@ static hg_return_t issue_mkobj_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
+  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
+  // uint64_t replies = it_map->second;
+  // pending_replies.erase(it_map);
+  // replies -= 1;
+  // if(replies > 0) {
+  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
+  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.append_out));
   assert(hg_ret == HG_SUCCESS);
+
   pthread_mutex_lock(&done_mutex);
   done++;
   pthread_cond_signal(&done_cond);
@@ -153,6 +170,13 @@ static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
+  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
+  // uint64_t replies = it_map->second;
+  // pending_replies.erase(it_map);
+  // replies -= 1;
+  // if(replies > 0) {
+  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
+  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.read_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -187,6 +211,13 @@ static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
+  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
+  // uint64_t replies = it_map->second;
+  // pending_replies.erase(it_map);
+  // replies -= 1;
+  // if(replies > 0) {
+  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
+  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.get_size_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -220,6 +251,15 @@ static hg_return_t issue_get_size_rpc(const struct hg_cb_info *callback_info) {
 static void run_my_rpc(struct operation_details *op)
 {
     na_return_t ret;
+    // uint64_t replies = 0;
+    // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
+    // if(it_map != pending_replies.end()) {
+    //   replies = it_map->second;
+    //   pending_replies.erase(it_map);
+    // }
+    // replies += 1;
+    // pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
+    // printf("replies = %lu\n", replies);
     switch (op->action) {
       case MKOBJ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_mkobj_rpc, op, server_url, HG_OP_ID_IGNORE);
                   break;
@@ -283,6 +323,9 @@ class BuddyClient
     }
 
     ~BuddyClient() {
+      while (pending_replies.size() > 0) {
+        sleep(1);
+      }
       hg_return_t ret = HG_SUCCESS;
       ret = HG_Hl_finalize();
       assert(ret == HG_SUCCESS);

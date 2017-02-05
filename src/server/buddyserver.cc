@@ -176,14 +176,19 @@ class BuddyServer
       while(it_map != object_map->end()) {
         binpack_segment_t seg;
         seg.obj = (*it_map).second;
+        pthread_mutex_lock(&seg.obj->mutex);
         if(seg.obj->type == READ_OPTIMIZED) {
           it_map++;
           continue;
         }
         seg.start_chunk = seg.obj->cursor;
         seg.end_chunk = seg.obj->lst_chunks->size();
-        seg.obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
-        dirty_bbos_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
+        size_t last_chunk_size = seg.obj->lst_chunks->back()->size;
+        seg.obj->dirty_size -= ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE;
+        seg.obj->dirty_size -= last_chunk_size;
+        pthread_mutex_unlock(&seg.obj->mutex);
+        dirty_bbos_size -= ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE;
+        dirty_bbos_size -= last_chunk_size;
         segments.push_back(seg);
         it_map++;
       }
@@ -193,28 +198,37 @@ class BuddyServer
     std::list<binpack_segment_t> rr_with_cursor_binpacking_policy() {
       std::list<binpack_segment_t> segments;
       chunkid_t num_chunks = CONTAINER_SIZE / PFS_CHUNK_SIZE;
+      std::list<bbos_obj_t *> packed_objects_list;
       while(num_chunks > 0 && lru_objects->size() > 0) {
         bbos_obj_t *obj = lru_objects->front();
         lru_objects->pop_front();
         binpack_segment_t seg;
+        pthread_mutex_lock(&obj->mutex);
         seg.obj = obj;
         seg.start_chunk = obj->cursor;
-        if((obj->lst_chunks->size() - seg.start_chunk) > num_chunks) {
+        seg.end_chunk = seg.start_chunk;
+        if((obj->last_full_chunk - seg.start_chunk) > num_chunks) {
           seg.end_chunk += num_chunks;
           obj->cursor += num_chunks;
         } else {
-          seg.end_chunk = obj->lst_chunks->size();
-          obj->cursor = obj->lst_chunks->size();
+          seg.end_chunk = obj->last_full_chunk;
+          obj->cursor = obj->last_full_chunk;
         }
         obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
         dirty_bbos_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
         if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
-          lru_objects->push_back(obj);
+          packed_objects_list.push_back(obj);
         } else {
           obj->marked_for_packing = false;
         }
+        pthread_mutex_unlock(&obj->mutex);
         segments.push_back(seg);
         num_chunks -= (seg.end_chunk - seg.start_chunk);
+      }
+      while (packed_objects_list.size() > 0) {
+        bbos_obj_t *obj = packed_objects_list.front();
+        packed_objects_list.pop_front();
+        lru_objects->push_back(obj);
       }
       return segments;
     }
@@ -337,6 +351,7 @@ class BuddyServer
       obj->type = type;
       obj->cursor = 0;
       obj->marked_for_packing = false;
+      obj->last_full_chunk = 0;
       pthread_mutex_init(&obj->mutex, NULL);
       pthread_mutex_lock(&obj->mutex);
       sprintf(obj->name, "%s", name);
@@ -433,7 +448,7 @@ class BuddyServer
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
-      printf("============= BBOS MEASUREMENTS of %s ============\n", server_url);
+      printf("============= BBOS MEASUREMENTS of %s =============\n", server_url);
       printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
       printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
       printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency);
@@ -474,12 +489,12 @@ class BuddyServer
 
     std::list<binpack_segment_t> get_objects(container_flag_t type=COMBINED) {
       switch (type) {
-        case COMBINED: switch (binpacking_policy) {
+        case COMBINED: if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
+                         return all_binpacking_policy();
+                       }
+                       switch (binpacking_policy) {
                          case RR_WITH_CURSOR: return rr_with_cursor_binpacking_policy();
                          case ALL: return all_binpacking_policy();
-                       }
-                       if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
-                         return all_binpacking_policy();
                        }
                        break;
 
@@ -659,6 +674,7 @@ class BuddyServer
         // we need to create a new chunk and append into it.
         if(!obj->lst_chunks->empty()) {
           next_chunk_id = last_chunk->id + 1;
+          obj->last_full_chunk = last_chunk->id;
         }
         chunk_info_t *chunk = make_chunk(next_chunk_id);
         obj->lst_chunks->push_back(chunk);
