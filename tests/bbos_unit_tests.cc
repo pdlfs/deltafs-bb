@@ -10,8 +10,11 @@
 using namespace pdlfs;
 using namespace bb;
 
-int main() {
-  BuddyServer *bs = new BuddyServer("/users/saukad/devel/deltafs-bb/config/narwhal_server.conf");
+/**
+ * argv[1] - server config file
+ */
+int main(int argc, char **argv) {
+  BuddyServer *bs = new BuddyServer(argv[1]);
   delete bs;
   return 0;
 }

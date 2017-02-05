@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include "../src/client/buddyclient.cc"
 
 using namespace pdlfs;
@@ -26,34 +27,33 @@ void read_data(BuddyClient *bc, const char *name, char *output, int num_chars) {
   } while(total_data_read < num_chars);
 }
 
+/**
+ * argv[1] = object name
+ * argv[2] = config file path
+ * argv[3] = object size
+ * argv[4] = chunk size
+ */
 int main(int argc, char **argv) {
-  // char output[8] = "";
-  char *input = (char *) malloc (sizeof(char) * 8);
-  for(int i=0; i<8; i++) {
-    input[i] = 'a';
+  size_t file_size = strtoul(argv[3], NULL, 0);
+  size_t chunk_size = strtoul(argv[4], NULL, 0);
+  char *input = (char *) malloc (sizeof(char) * chunk_size);
+
+  for(int i=0; i<chunk_size; i++) {
+    input[i] = 'a' + (rand() % 26);
   }
   int ret;
   size_t size = 0;
-  if(argc < 3) {
+  if(argc < 5) {
     printf("Not enough arguments for testing client.\n");
     exit(1);
   }
-  BuddyClient *bc = new BuddyClient("/users/saukad/devel/deltafs-bb/config/narwhal_client.conf");
+  BuddyClient *bc = new BuddyClient(argv[2]);
   ret = bc->mkobj(argv[1]);
-  write_data(bc, argv[1], input, 8);
   assert(ret == 0);
-  // read_data(bc, argv[1], output, 6);
-  // printf("data read = from object %s = %s\n", argv[1], output);
-  // size = bc->get_size(argv[1]);
-  // printf("size of object %s = %lu\n", argv[1], size);
-
-  ret = bc->mkobj(argv[2], READ_OPTIMIZED);
-  write_data(bc, argv[2], input, 8);
-  assert(ret == 0);
-  // read_data(bc, argv[2], output, 6);
-  // printf("data read = from object %s = %s\n", argv[2], output);
-  // size = bc->get_size(argv[2]);
-  // printf("size of object %s = %lu\n", argv[2], size);
+  uint64_t num_chunks = (file_size / chunk_size);
+  for(uint64_t n=0; n<num_chunks; n++) {
+      write_data(bc, argv[1], input, chunk_size);
+  }
   delete bc;
   return 0;
 }
