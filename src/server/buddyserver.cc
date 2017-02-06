@@ -449,8 +449,7 @@ class BuddyServer
       assert(!BINPACKING_SHUTDOWN);
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
-      printf("output manifest = %s\n", output_manifest);
-      // build_global_manifest(output_manifest); // important for booting next time and reading
+      build_global_manifest(output_manifest); // important for booting next time and reading
       printf("============= BBOS MEASUREMENTS of %s =============\n", server_url);
       printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
       printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
@@ -511,7 +510,6 @@ class BuddyServer
     int build_container(const char *c_name,
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
-      printf("%s start\n", __func__);
       snprintf(c_path, PATH_LEN, "%s/%s", dw_mount_point, c_name);
       binpack_segment_t b_obj;
       size_t data_written = 0;
@@ -582,7 +580,6 @@ class BuddyServer
       avg_container_response_time *= (num_containers_written - 1);
       avg_container_response_time += ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
       avg_container_response_time /= num_containers_written;
-      printf("%s end\n", __func__);
       return 0;
     }
 
