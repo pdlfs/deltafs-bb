@@ -450,7 +450,7 @@ class BuddyServer
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
       build_global_manifest(output_manifest); // important for booting next time and reading
-      printf("============= BBOS MEASUREMENTS of %s =============\n", server_url);
+      printf("============= BBOS MEASUREMENTS of %s (OBJ_CHUNK_SIZE = %lu, PFS_CHUNK_SIZE = %lu) =============\n", server_url, OBJ_CHUNK_SIZE, PFS_CHUNK_SIZE);
       printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
       printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
       printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency);
