@@ -9,6 +9,17 @@
 using namespace pdlfs;
 using namespace bb;
 
+static const char alphanum[] =
+"0123456789"
+"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+"abcdefghijklmnopqrstuvwxyz";
+
+int stringLength = sizeof(alphanum) - 1;
+
+char genRandom() {
+  return alphanum[rand() % stringLength];
+}
+
 void write_data(BuddyClient *bc, const char *name, char *input, int num_chars) {
   size_t total_data_written = 0;
   size_t data_written = 0;
@@ -37,9 +48,9 @@ int main(int argc, char **argv) {
   size_t file_size = strtoul(argv[3], NULL, 0);
   size_t chunk_size = strtoul(argv[4], NULL, 0);
   char *input = (char *) malloc (sizeof(char) * chunk_size);
-
+  srand(time(0));
   for(int i=0; i<chunk_size; i++) {
-    input[i] = 'a' + (rand() % 26);
+    input[i] = genRandom();
   }
   int ret;
   size_t size = 0;
