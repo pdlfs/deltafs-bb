@@ -20,10 +20,10 @@ num_bbos_server_nodes=2
 # Paths
 umbrella_build_dir="$HOME/src/deltafs-umbrella/build"
 deltafs_dir="$HOME/src/deltafs-bb"
-output_dir="$HOME/src/deltafs-bb/dump" # SHOULD be burst buffer path
+output_dir="$HOME/src/deltafs-bb/dump" # SHOULD be within burst buffer mount point
 config_dir="$output_dir/config"
 mkdir $config_dir
-logfile="" # don't put in container_dir because we delete it
+logfile=""
 # umbrella_build_dir="/users/saukad/devel/deltafs-bb/build"
 # deltafs_dir="/users/saukad/devel/deltafs-bb"
 # output_dir="/tmp/bb"
@@ -36,24 +36,24 @@ logfile="" # don't put in container_dir because we delete it
 ###############
 
 # Client transfer sizes we experiment with
-# OBJECT_CHUNK_SIZE[0]=1048576 # 1 MB
-# OBJECT_SIZE[0]=62914560 # 60 MB
-
-OBJECT_CHUNK_SIZE[0]=2097152 # 2 MB
+OBJECT_CHUNK_SIZE[0]=1048576 # 1 MB
 OBJECT_SIZE[0]=62914560 # 60 MB
 
-# OBJECT_CHUNK_SIZE[2]=4194304 # 4 MB
-# OBJECT_SIZE[2]=62914560 # 60 MB
+OBJECT_CHUNK_SIZE[1]=2097152 # 2 MB
+OBJECT_SIZE[1]=62914560 # 60 MB
 
-# OBJECT_CHUNK_SIZE[3]=15728640 # 15 MB
-# OBJECT_SIZE[3]=62914560 # 60 MB
+OBJECT_CHUNK_SIZE[2]=4194304 # 4 MB
+OBJECT_SIZE[2]=62914560 # 60 MB
+
+OBJECT_CHUNK_SIZE[3]=15728640 # 15 MB
+OBJECT_SIZE[3]=62914560 # 60 MB
 
 # PFS sizes we experiment with
-# PFS_CHUNK_SIZE[0]=1048576
-# PFS_CHUNK_SIZE[1]=2097152
-PFS_CHUNK_SIZE[0]=4194304
-PFS_CHUNK_SIZE[1]=8388608
-PFS_CHUNK_SIZE[2]=16777216
+PFS_CHUNK_SIZE[0]=1048576
+PFS_CHUNK_SIZE[1]=2097152
+PFS_CHUNK_SIZE[2]=4194304
+PFS_CHUNK_SIZE[3]=8388608
+PFS_CHUNK_SIZE[4]=16777216
 
 # OBJECT_CHUNK_SIZE=2
 # OBJECT_SIZE=2048
@@ -84,6 +84,7 @@ for pfs_size in ${PFS_CHUNK_SIZE[@]}
 do
   message ""
   message "========= TESTING FOR PFS CHUNK SIZE ${PFS_CHUNK_SIZE[$p]} ========="
+  dd=0
   s=0
   for sizes in ${OBJECT_CHUNK_SIZE[@]}
   do
@@ -97,6 +98,15 @@ do
     mkdir $container_dir
     for bbos_server in $(echo $bbos_server_nodes | sed "s/,/ /g")
     do
+      if [[ "$dd" == 0 ]]; then
+        # create a dummy file and test raw throughput to DW using dd
+        num_pfs_chunks_per_container=$((503316480 / ${PFS_CHUNK_SIZE[$p]})) # 480 MB / PFS_CHUNK_SIZE
+        message "Checking RAW throughput using dd for PFS_CHUNK_SIZE of ${PFS_CHUNK_SIZE[$p]} and container size of 480 MB"
+        aprun -L $bbos_server -n 1 -N 1 -d 1 dd if=/dev/urandom of=$container_dir/dummy.file.$bbos_server bs=${PFS_CHUNK_SIZE[$p]} count=$num_pfs_chunks_per_container 2>&1 | tee $logfile
+        # mpirun --host $bbos_server dd if=/dev/urandom of=$container_dir/dummy.file bs=${PFS_CHUNK_SIZE[$p]} count=$num_pfs_chunks_per_container 2>&1 | tee $logfile
+        dd=1
+      fi
+
       # copying config files for every server
       new_server_config=$config_dir/$bbos_server_config_name.${OBJECT_CHUNK_SIZE[$s]}.${PFS_CHUNK_SIZE[$p]}.$bbos_server
       cp $bbos_server_config.${OBJECT_CHUNK_SIZE[$s]}.${PFS_CHUNK_SIZE[$p]} $new_server_config
