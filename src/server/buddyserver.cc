@@ -373,32 +373,34 @@ class BuddyServer
       int i = 0;
       const char *out_manifest;
       char knob[PATH_LEN];
+      char output_file_name[PATH_LEN];
       while(configuration >> knob) {
         switch (i) {
-          case 0: strncpy(dw_mount_point, knob, PATH_LEN); // DW mount point
+          case 0: snprintf(output_file_name, PATH_LEN, "%s", knob);
                   break;
-          case 1: snprintf(output_manifest, PATH_LEN, "%s%s", dw_mount_point, knob); // output manifest file
+          case 1: port = atoi(knob);
                   break;
-          case 2: port = atoi(knob);
+          case 2: PFS_CHUNK_SIZE = strtoul(knob, NULL, 0);
                   break;
-          case 3: snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
+          case 3: OBJ_CHUNK_SIZE = strtoul(knob, NULL, 0);
+                  break;
+          case 4: hg_thread_pool_init(atoi(knob), &thread_pool);
+                  break;
+          case 5: binpacking_threshold = strtoul(knob, NULL, 0);
+                  break;
+          case 6: binpacking_policy = (binpacking_policy_t) atoi(knob);
+                  break;
+          case 7: OBJECT_DIRTY_THRESHOLD = strtoul(knob, NULL, 0);
+                  break;
+          case 8: CONTAINER_SIZE = strtoul(knob, NULL, 0);
+                  break;
+          case 9: snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
                   server_network_class = NA_Initialize(server_url, NA_TRUE);
                   assert(server_network_class);
                   break;
-          case 4: PFS_CHUNK_SIZE = strtoul(knob, NULL, 0);
-                  break;
-          case 5: OBJ_CHUNK_SIZE = strtoul(knob, NULL, 0);
-                  break;
-          case 6: hg_thread_pool_init(atoi(knob), &thread_pool);
-                  break;
-          case 7: binpacking_threshold = strtoul(knob, NULL, 0);
-                  break;
-          case 8: binpacking_policy = (binpacking_policy_t) atoi(knob);
-                  break;
-          case 9: OBJECT_DIRTY_THRESHOLD = strtoul(knob, NULL, 0);
-                  break;
-          case 10: CONTAINER_SIZE = strtoul(knob, NULL, 0);
-                  break;
+          case 10: snprintf(output_manifest, PATH_LEN, "%s/%s", knob, output_file_name); // output manifest file
+                   strncpy(dw_mount_point, knob, PATH_LEN); // DW mount point
+                   break;
         }
         i++;
       }
@@ -447,7 +449,8 @@ class BuddyServer
       assert(!BINPACKING_SHUTDOWN);
       assert(dirty_bbos_size == 0);
       assert(dirty_individual_size == 0);
-      build_global_manifest(output_manifest); // important for booting next time and reading
+      printf("output manifest = %s\n", output_manifest);
+      // build_global_manifest(output_manifest); // important for booting next time and reading
       printf("============= BBOS MEASUREMENTS of %s =============\n", server_url);
       printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
       printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
@@ -508,7 +511,8 @@ class BuddyServer
     int build_container(const char *c_name,
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
-      snprintf(c_path, PATH_LEN, "%s%s", dw_mount_point, c_name);
+      printf("%s start\n", __func__);
+      snprintf(c_path, PATH_LEN, "%s/%s", dw_mount_point, c_name);
       binpack_segment_t b_obj;
       size_t data_written = 0;
       off_t c_offset = 0;
@@ -578,6 +582,7 @@ class BuddyServer
       avg_container_response_time *= (num_containers_written - 1);
       avg_container_response_time += ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
       avg_container_response_time /= num_containers_written;
+      printf("%s end\n", __func__);
       return 0;
     }
 
@@ -779,6 +784,7 @@ static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
   assert(ret == HG_SUCCESS);
   (void)ret;
   HG_Destroy(append_info->handle);
+  HG_Bulk_free(append_info->bulk_handle);
   free(append_info->buffer);
   free(append_info);
   return HG_SUCCESS;
@@ -817,6 +823,7 @@ static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
   int ret = HG_Respond(read_info->handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   HG_Destroy(read_info->handle);
+  HG_Bulk_free(read_info->bulk_handle);
   free(read_info);
   (void)ret;
   return HG_SUCCESS;
