@@ -22,13 +22,13 @@ num_bbos_server_nodes=2
 # Paths
 umbrella_build_dir="$HOME/src/deltafs-umbrella/build"
 deltafs_dir="$HOME/src/deltafs-bb"
-output_dir="$HOME/src/deltafs_bb/dump" # SHOULD be burst buffer path
+output_dir="$HOME/src/deltafs-bb/dump" # SHOULD be burst buffer path
 config_dir="$output_dir/config"
 mkdir $config_dir
 container_dir="$output_dir/containers"
 mkdir $container_dir
 rm -rf $container_dir/*
-logfile=""
+logfile="" # don't put in container_dir because we delete it
 # umbrella_build_dir="/users/saukad/devel/deltafs-bb/build"
 # deltafs_dir="/users/saukad/devel/deltafs-bb"
 # output_dir="/tmp/bb"
@@ -82,8 +82,8 @@ message "Getting server IP addresses..."
 aprun -L $bbos_server_nodes -n 1 -N 1 hostname -i > $output_dir/bbos_server_ip.txt
 # mpirun --host $bbos_server_nodes hostname -i > $output_dir/bbos_server_ip.txt
 
-bbos_client_path="$umbrella_build_dir/src/bbos_client"
-bbos_server_path="$umbrella_build_dir/src/bbos_server"
+bbos_client_path="$umbrella_build_dir/bin/bbos_client"
+bbos_server_path="$umbrella_build_dir/bin/bbos_server"
 # bbos_client_config_name="trinitite_client.conf"
 # bbos_server_config_name="trinitite_server.conf"
 bbos_client_config_name="narwhal_client.conf"
@@ -150,6 +150,7 @@ do
       # mpirun --host $bbos_server pkill -SIGINT bbos_server 2>&1 | tee $logfile
       i=$(($i + 1))
     done
+    rm -rf $container_dir/*
     s=$(($s + 1))
   done
   p=$(($p + 1))
