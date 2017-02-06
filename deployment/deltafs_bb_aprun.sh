@@ -36,24 +36,24 @@ logfile="" # don't put in container_dir because we delete it
 ###############
 
 # Client transfer sizes we experiment with
-OBJECT_CHUNK_SIZE[0]=1048576 # 1 MB
+# OBJECT_CHUNK_SIZE[0]=1048576 # 1 MB
+# OBJECT_SIZE[0]=62914560 # 60 MB
+
+OBJECT_CHUNK_SIZE[0]=2097152 # 2 MB
 OBJECT_SIZE[0]=62914560 # 60 MB
 
-OBJECT_CHUNK_SIZE[1]=2097152 # 2 MB
-OBJECT_SIZE[1]=62914560 # 60 MB
+# OBJECT_CHUNK_SIZE[2]=4194304 # 4 MB
+# OBJECT_SIZE[2]=62914560 # 60 MB
 
-OBJECT_CHUNK_SIZE[2]=4194304 # 4 MB
-OBJECT_SIZE[2]=62914560 # 60 MB
-
-OBJECT_CHUNK_SIZE[3]=15728640 # 15 MB
-OBJECT_SIZE[3]=62914560 # 60 MB
+# OBJECT_CHUNK_SIZE[3]=15728640 # 15 MB
+# OBJECT_SIZE[3]=62914560 # 60 MB
 
 # PFS sizes we experiment with
-PFS_CHUNK_SIZE[0]=1048576
-PFS_CHUNK_SIZE[1]=2097152
-PFS_CHUNK_SIZE[2]=4194304
-PFS_CHUNK_SIZE[3]=8388608
-PFS_CHUNK_SIZE[4]=16777216
+# PFS_CHUNK_SIZE[0]=1048576
+# PFS_CHUNK_SIZE[1]=2097152
+PFS_CHUNK_SIZE[0]=4194304
+PFS_CHUNK_SIZE[1]=8388608
+PFS_CHUNK_SIZE[2]=16777216
 
 # OBJECT_CHUNK_SIZE=2
 # OBJECT_SIZE=2048
@@ -65,8 +65,6 @@ die () { message "Error $@"; exit 1; }
 # PBS_NODEFILE="fakenodes.txt"
 bbos_client_nodes=$(cat $PBS_NODEFILE | uniq | sort | head -n $num_bbos_client_nodes | tr '\n' ',')
 bbos_server_nodes=$(cat $PBS_NODEFILE | uniq | sort | tail -n $num_bbos_server_nodes | tr '\n' ',')
-echo $bbos_client_nodes
-echo $bbos_server_nodes
 
 bbos_client_path="$umbrella_build_dir/bin/bbos_client"
 bbos_server_path="$umbrella_build_dir/bin/bbos_server"
