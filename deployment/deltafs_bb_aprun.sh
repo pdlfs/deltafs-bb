@@ -40,6 +40,9 @@ logfile=""
 PBS_NODEFILE_SERVER="servers.txt"
 PBS_NODEFILE_CLIENT="clients.txt"
 
+OBJECT_CHUNK_SIZE=2097152
+OBJECT_SIZE=10737418240
+
 message () { echo "$@" | tee $logfile; }
 die () { message "Error $@"; exit 1; }
 
@@ -70,7 +73,7 @@ for bbos_server in $(echo $bbos_server_nodes | sed "s/,/ /g")
 do
   # copying config files for every server
   cp $bbos_server_config $config_dir/$bbos_server_config_name.$bbos_server
-  aprun -L $bbos_server -n 2 -N 32 -d 2 $bbos_server_path -c $config_dir/$bbos_server_config_name.$bbos_server 2>&1 | tee $logfile
+  aprun -L $bbos_server -n 2 -N 32 -d 2 $bbos_server_path $config_dir/$bbos_server_config_name.$bbos_server 2>&1 | tee $logfile
   $bbos_server-pid=$!
 
   message "Started BBOS server $bbos_server."
@@ -89,7 +92,8 @@ do
     echo $bbos_server >> $config_dir/$bbos_client_config_name.$bbos_server
 
     if [[ $n -lt $num_bbos_clients_per_server ]]; then
-      aprun -L $bbos_client -n 1 -N 1 -d 1 $bbos_client_path -c $config_dir/$bbos_client_config_name.$bbos_server 2>&1 | tee $logfile
+      object_name=$bbos_client$bbos_server
+      aprun -L $bbos_client -n 1 -N 1 -d 1 $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server $OBJECT_CHUNK_SIZE $OBJECT_SIZE 2>&1 | tee $logfile
       n=$(($n + 1))
       message "Started BBOS client $bbos_client bound to BBOS server $bbos_server."
     fi
