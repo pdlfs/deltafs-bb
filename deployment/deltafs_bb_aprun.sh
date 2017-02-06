@@ -83,13 +83,13 @@ p=0
 for pfs_size in ${PFS_CHUNK_SIZE[@]}
 do
   message ""
-  message "========= TESTING FOR PFS CHUNK SIZE ${PFS_CHUNK_SIZE[$p]} ========="
+  message "========= TESTING FOR DW CHUNK SIZE ${PFS_CHUNK_SIZE[$p]} ========="
   dd=0
   s=0
   for sizes in ${OBJECT_CHUNK_SIZE[@]}
   do
     message ""
-    message "========= TESTING FOR OBJ CHUNK SIZE ${OBJECT_CHUNK_SIZE[$s]} ========="
+    message "========= TESTING FOR MERCURY TRANSFER SIZE ${OBJECT_CHUNK_SIZE[$s]} ========="
     server_num=0
     declare -a server_pids
     num_skip=0
@@ -112,7 +112,7 @@ do
       cp $bbos_server_config.${OBJECT_CHUNK_SIZE[$s]}.${PFS_CHUNK_SIZE[$p]} $new_server_config
       echo $bbos_server >> $new_server_config
       echo $container_dir >> $new_server_config
-      aprun -L $bbos_server -n 2 -N 32 -d 2 $bbos_server_path $new_server_config 2>&1 | tee $logfile # not put in background on purpose
+      aprun -L $bbos_server -n 2 -N 32 -d 2 $bbos_server_path $new_server_config & 2>&1 | tee $logfile # not put in background on purpose
       # mpirun --host $bbos_server $bbos_server_path $config_dir/$bbos_server_config_name.$bbos_server & 2>&1 | tee $logfile
       server_pids[$server_num]=$(echo $!)
       sleep 1
