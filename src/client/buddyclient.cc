@@ -367,6 +367,7 @@ class BuddyClient
       done--;
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.append_out.size;
+      HG_Bulk_free(op->input.append_in.bulk_handle);
       free(alloc_buf);
       free(op);
       return retval;
@@ -392,6 +393,7 @@ class BuddyClient
       done--;
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.read_out.size;
+      HG_Bulk_free(op->input.read_in.bulk_handle);
       memcpy(buf, alloc_buf, retval);
       free(alloc_buf);
       free(op);
