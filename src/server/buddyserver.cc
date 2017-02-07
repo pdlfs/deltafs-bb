@@ -72,7 +72,6 @@ static double avg_binpack_time = 0.0;
 static hg_thread_pool_t *thread_pool;
 
 static void *bs_obj;
-
 struct bbos_append_cb {
   void *buffer;
   hg_bulk_t bulk_handle;
@@ -757,6 +756,7 @@ static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
+  HG_Destroy(*handle);
   free(args);
   return (hg_thread_ret_t) NULL;
 }
@@ -862,6 +862,7 @@ static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
+  HG_Destroy(*handle);
   free(args);
   return (hg_thread_ret_t) NULL;
 }
@@ -871,6 +872,7 @@ static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle) {
   work->func = bbos_mkobj_handler;
   work->args = (void *) malloc (sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
+  HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
@@ -880,6 +882,7 @@ static hg_return_t bbos_read_handler_decorator(hg_handle_t handle) {
   work->func = bbos_read_handler;
   work->args = (void *) malloc (sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
+  HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
@@ -889,6 +892,7 @@ static hg_return_t bbos_append_handler_decorator(hg_handle_t handle) {
   work->func = bbos_append_handler;
   work->args = (void *) malloc (sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
+  HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
@@ -898,6 +902,7 @@ static hg_return_t bbos_get_size_handler_decorator(hg_handle_t handle) {
   work->func = bbos_get_size_handler;
   work->args = (void *) malloc (sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
+  HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
