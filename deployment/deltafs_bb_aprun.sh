@@ -2,7 +2,7 @@
 #
 #MSUB -N deltafs-bb-test
 #MSUB -l walltime=1:00:00
-#MSUB -l nodes=10:haswell
+#MSUB -l nodes=35:haswell
 #MSUB -o /users/$USER/joblogs/deltafs-bb-test-$MOAB_JOBID.out
 #MSUB -j oe
 ##MSUB -V
@@ -14,8 +14,8 @@
 # Tunable parameters #
 ######################
 
-num_bbos_client_nodes=8
-num_bbos_server_nodes=2
+num_bbos_client_nodes=30
+num_bbos_server_nodes=5
 
 # Paths
 umbrella_build_dir="$HOME/src/deltafs-umbrella/build"
