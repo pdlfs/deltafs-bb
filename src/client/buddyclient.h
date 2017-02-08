@@ -8,6 +8,10 @@
  */
 
 #include <mercury_hl_macros.h>
+/* Avoid compilation warning */
+#ifndef _WIN32
+    #undef _GNU_SOURCE
+#endif
 #include <mercury_thread.h>
 #include <mercury_proc_string.h>
 #include <mercury_config.h>
