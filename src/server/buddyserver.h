@@ -9,11 +9,6 @@
 
 #include <list>
 #include <map>
-#include <mercury.h>
-#include <mercury_bulk.h>
-#include <mercury_macros.h>
-#include <mercury_request.h>
-#include <mercury_hl.h>
 #include <mercury_hl_macros.h>
 #include <mercury_proc_string.h>
 #include <mercury_thread.h>
