@@ -26,7 +26,6 @@ namespace bb {
 static int done = 0;
 static pthread_cond_t done_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t done_mutex = PTHREAD_MUTEX_INITIALIZER;
-static void run_my_rpc(int value);
 static na_class_t *network_class;
 static hg_context_t *hg_context;
 static hg_class_t *hg_class;
@@ -77,16 +76,18 @@ static hg_return_t bbos_rpc_handler(hg_handle_t handle) {
   return HG_SUCCESS;
 }
 
+static hg_return_t lookup_address(const struct hg_cb_info *callback_info) {
+  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
+  pthread_mutex_lock(&done_mutex);
+  done++;
+  pthread_cond_signal(&done_cond);
+  pthread_mutex_unlock(&done_mutex);
+  return HG_SUCCESS;
+}
+
 static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
-  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
-  // uint64_t replies = it_map->second;
-  // pending_replies.erase(it_map);
-  // replies -= 1;
-  // if(replies > 0) {
-  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
-  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.mkobj_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -100,10 +101,8 @@ static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
   return HG_SUCCESS;
 }
 
-static hg_return_t issue_mkobj_rpc(const struct hg_cb_info *callback_info) {
+static hg_return_t issue_mkobj_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, mkobj_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
@@ -120,13 +119,6 @@ static hg_return_t issue_mkobj_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
-  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
-  // uint64_t replies = it_map->second;
-  // pending_replies.erase(it_map);
-  // replies -= 1;
-  // if(replies > 0) {
-  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
-  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.append_out));
   assert(hg_ret == HG_SUCCESS);
 
@@ -141,11 +133,8 @@ static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
   return HG_SUCCESS;
 }
 
-static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
-  // bbos_append_in_t in;
+static hg_return_t issue_append_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, append_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
@@ -162,13 +151,6 @@ static hg_return_t issue_append_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
-  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
-  // uint64_t replies = it_map->second;
-  // pending_replies.erase(it_map);
-  // replies -= 1;
-  // if(replies > 0) {
-  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
-  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.read_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -182,10 +164,8 @@ static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
   return HG_SUCCESS;
 }
 
-static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
+static hg_return_t issue_read_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, read_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
@@ -203,13 +183,6 @@ static hg_return_t issue_read_rpc(const struct hg_cb_info *callback_info) {
 static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
-  // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
-  // uint64_t replies = it_map->second;
-  // pending_replies.erase(it_map);
-  // replies -= 1;
-  // if(replies > 0) {
-  //   pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
-  // }
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.get_size_out));
   assert(hg_ret == HG_SUCCESS);
   pthread_mutex_lock(&done_mutex);
@@ -223,10 +196,8 @@ static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
   return HG_SUCCESS;
 }
 
-static hg_return_t issue_get_size_rpc(const struct hg_cb_info *callback_info) {
+static hg_return_t issue_get_size_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  server_addr = (hg_addr_t) callback_info->info.lookup.addr;
   hg_ret = HG_Create(hg_context, server_addr, get_size_rpc_id, &(op->handle));
   assert(hg_ret == HG_SUCCESS);
   assert(op->handle);
@@ -240,33 +211,6 @@ static hg_return_t issue_get_size_rpc(const struct hg_cb_info *callback_info) {
   return ((hg_return_t)NA_SUCCESS);
 }
 
-static void run_my_rpc(struct operation_details *op)
-{
-    na_return_t ret;
-    // uint64_t replies = 0;
-    // std::map<std::string, uint64_t>::iterator it_map = pending_replies.find(std::string(op->name));
-    // if(it_map != pending_replies.end()) {
-    //   replies = it_map->second;
-    //   pending_replies.erase(it_map);
-    // }
-    // replies += 1;
-    // pending_replies.insert(it_map, std::pair<std::string, uint64_t>(std::string(op->name), replies));
-    // printf("replies = %lu\n", replies);
-    switch (op->action) {
-      case MKOBJ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_mkobj_rpc, op, server_url, HG_OP_ID_IGNORE);
-                  break;
-      case APPEND: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_append_rpc, op, server_url, HG_OP_ID_IGNORE);
-                   break;
-      case READ: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_read_rpc, op, server_url, HG_OP_ID_IGNORE);
-                 break;
-      case GET_SIZE: ret = (na_return_t)HG_Addr_lookup(hg_context, issue_get_size_rpc, op, server_url, HG_OP_ID_IGNORE);
-                     break;
-    }
-    assert(ret == NA_SUCCESS);
-    (void)ret;
-    return;
-}
-
 class BuddyClient
 {
   private:
@@ -276,6 +220,7 @@ class BuddyClient
   public:
     BuddyClient(const char *config_file) {
       assert(config_file != NULL);
+      na_return_t na_ret;
       std::ifstream configuration(config_file);
       if(!configuration) {
         exit(-BB_CONFIG_ERROR);
@@ -312,6 +257,16 @@ class BuddyClient
       append_rpc_id = MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
       read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
       get_size_rpc_id = MERCURY_REGISTER(hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_rpc_handler);
+
+      /* lookup address only once */
+      na_ret = (na_return_t)HG_Addr_lookup(hg_context, lookup_address, NULL, server_url, HG_OP_ID_IGNORE);
+      assert(na_ret == NA_SUCCESS);
+
+      pthread_mutex_lock(&done_mutex);
+      while(done < 1)
+        pthread_cond_wait(&done_cond, &done_mutex);
+      done--;
+      pthread_mutex_unlock(&done_mutex);
     }
 
     ~BuddyClient() {
@@ -327,10 +282,12 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval = -1;
+      hg_return_t rpc_ret;
       op->action = MKOBJ;
       op->input.mkobj_in.name = (const char *) op->name;
       op->input.mkobj_in.type = (hg_bool_t) type;
-      run_my_rpc(op);
+      rpc_ret = issue_mkobj_rpc(op);
+      assert(rpc_ret == HG_SUCCESS);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
         pthread_cond_wait(&done_cond, &done_mutex);
@@ -350,7 +307,8 @@ class BuddyClient
                             &(op->input.append_in.bulk_handle));
       assert(hg_ret == HG_SUCCESS);
       op->action = APPEND;
-      run_my_rpc(op);
+      hg_ret = issue_append_rpc(op);
+      assert(hg_ret == HG_SUCCESS);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
         pthread_cond_wait(&done_cond, &done_mutex);
@@ -374,7 +332,8 @@ class BuddyClient
                             &(op->input.read_in.bulk_handle));
       assert(hg_ret == HG_SUCCESS);
       op->action = READ;
-      run_my_rpc(op);
+      hg_ret = issue_read_rpc(op);
+      assert(hg_ret == HG_SUCCESS);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
         pthread_cond_wait(&done_cond, &done_mutex);
@@ -390,8 +349,10 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval = -1;
+      hg_return_t ret_rpc;
       op->action = GET_SIZE;
-      run_my_rpc(op);
+      ret_rpc = issue_get_size_rpc(op);
+      assert(ret_rpc == HG_SUCCESS);
       pthread_mutex_lock(&done_mutex);
       while(done < 1)
         pthread_cond_wait(&done_cond, &done_mutex);
