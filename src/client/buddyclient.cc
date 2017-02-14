@@ -345,9 +345,7 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       size_t retval = 0;
-      void *alloc_buf = (void *) calloc (1, len);
-      memcpy(alloc_buf, buf, len);
-      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &alloc_buf, &(len),
+      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &(len),
                             HG_BULK_READ_ONLY,
                             &(op->input.append_in.bulk_handle));
       assert(hg_ret == HG_SUCCESS);
@@ -360,7 +358,6 @@ class BuddyClient
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.append_out.size;
       HG_Bulk_free(op->input.append_in.bulk_handle);
-      free(alloc_buf);
       free(op);
       return retval;
     }
@@ -369,10 +366,9 @@ class BuddyClient
       struct operation_details *op = new operation_details;
       sprintf(op->name, "%s", name);
       int retval;
-      void *alloc_buf = (void *) calloc (1, len);
       op->input.read_in.offset = (hg_size_t) offset;
       op->input.read_in.size = (hg_size_t) len;
-      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &alloc_buf,
+      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf,
                             &(op->input.read_in.size),
                             HG_BULK_READWRITE,
                             &(op->input.read_in.bulk_handle));
@@ -386,8 +382,6 @@ class BuddyClient
       pthread_mutex_unlock(&done_mutex);
       retval = (size_t) op->output.read_out.size;
       HG_Bulk_free(op->input.read_in.bulk_handle);
-      memcpy(buf, alloc_buf, retval);
-      free(alloc_buf);
       free(op);
       return retval;
     }
