@@ -68,6 +68,7 @@ static double avg_chunk_response_time = 0.0;
 static double avg_container_response_time = 0.0;
 static double avg_append_latency = 0.0;
 static double avg_binpack_time = 0.0;
+static uint64_t num_seeks = 0;
 
 static hg_thread_pool_t *thread_pool;
 
@@ -709,7 +710,8 @@ class BuddyServer
         return -BB_INVALID_READ;
       }
       size_t data_read = 0;
-      size_t data_to_be_read = 0;
+      size_t size_to_be_read = 0;
+      size_t offset_to_be_read = 0;
       std::list<chunk_info_t *>::iterator it_chunks = obj->lst_chunks->begin();
       chunkid_t chunk_num = offset / PFS_CHUNK_SIZE;
       int chunk_obj_offset = (offset - (chunk_num * PFS_CHUNK_SIZE)) / OBJ_CHUNK_SIZE;
@@ -740,7 +742,12 @@ class BuddyServer
         assert(read_size == 1);
         fclose(fp_seg);
       }
-      data_read += get_data(chunk, buf, offset - (PFS_CHUNK_SIZE * chunk_num) + (OBJ_CHUNK_SIZE * chunk_obj_offset), data_to_be_read);
+      offset_to_be_read = offset - (PFS_CHUNK_SIZE * chunk_num) + (OBJ_CHUNK_SIZE * chunk_obj_offset);
+      size_to_be_read = PFS_CHUNK_SIZE;
+      if(len < size_to_be_read) {
+        size_to_be_read = len;
+      }
+      data_read += get_data(chunk, buf, offset_to_be_read, size_to_be_read);
       pthread_mutex_unlock(&obj->mutex);
       return data_read;
     }

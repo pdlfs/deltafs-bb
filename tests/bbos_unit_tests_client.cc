@@ -48,6 +48,7 @@ int main(int argc, char **argv) {
   size_t file_size = strtoul(argv[3], NULL, 0);
   size_t chunk_size = strtoul(argv[4], NULL, 0);
   char *input = (char *) malloc (sizeof(char) * chunk_size);
+  char *output = (char *) malloc (sizeof(char) * chunk_size * (file_size / chunk_size));
   srand(time(0));
   for(int i=0; i<chunk_size; i++) {
     input[i] = genRandom();
@@ -65,6 +66,10 @@ int main(int argc, char **argv) {
   for(uint64_t n=0; n<num_chunks; n++) {
       write_data(bc, argv[1], input, chunk_size);
   }
+  // FIXME: uncomment while performing read tests
+  // num_chunks = (file_size / chunk_size);
+  // read_data(bc, argv[1], output, chunk_size * num_chunks);
+  // printf("data read = %s\n", output);
   delete bc;
   return 0;
 }
