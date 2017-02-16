@@ -117,7 +117,7 @@ do
       aprun -L $bbos_server -n 2 -N 32 -d 2 $bbos_server_path $new_server_config & 2>&1 | tee $logfile # not put in background on purpose
       # mpirun --host $bbos_server $bbos_server_path $config_dir/$bbos_server_config_name.$bbos_server & 2>&1 | tee $logfile
       server_pids[$server_num]=$(echo $!)
-      sleep 1
+      sleep 5
       message "Started BBOS server $bbos_server with PID ${server_pids[$server_num]}."
       j=0
       for bbos_client in $(echo $bbos_client_nodes | sed "s/,/ /g")
@@ -138,7 +138,6 @@ do
           aprun -L $bbos_client -n 1 -N 1 -d 1 $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server ${OBJECT_SIZE[$s]} ${OBJECT_CHUNK_SIZE[$s]} & 2>&1 | tee $logfile
           # mpirun --host $bbos_client $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server $OBJECT_SIZE $OBJECT_CHUNK_SIZE 2>&1 | tee $logfile
           message "Started BBOS client $bbos_client bound to BBOS server $bbos_server with object $object_name."
-          sleep 1
           n=$(($n + 1))
         fi
       done
