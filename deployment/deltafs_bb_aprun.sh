@@ -135,7 +135,7 @@ do
 
         if [[ $n -lt $num_bbos_clients_per_server ]]; then
           object_name=$bbos_client-$bbos_server
-          aprun -L $bbos_client -n 1 -N 1 -d 1 $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server ${OBJECT_SIZE[$s]} ${OBJECT_CHUNK_SIZE[$s]} 2>&1 | tee $logfile
+          aprun -L $bbos_client -n 1 -N 1 -d 1 $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server ${OBJECT_SIZE[$s]} ${OBJECT_CHUNK_SIZE[$s]} & 2>&1 | tee $logfile
           # mpirun --host $bbos_client $bbos_client_path $object_name $config_dir/$bbos_client_config_name.$bbos_server $OBJECT_SIZE $OBJECT_CHUNK_SIZE 2>&1 | tee $logfile
           message "Started BBOS client $bbos_client bound to BBOS server $bbos_server with object $object_name."
           sleep 1
@@ -145,6 +145,8 @@ do
       num_skip=$(($num_skip + $num_bbos_clients_per_server))
       server_num=$(($server_num + 1))
     done
+    message "Sleeping for clients to finish writing..."
+    sleep 100
     i=0
     for bbos_server in $(echo $bbos_server_nodes | sed "s/,/ /g")
     do
