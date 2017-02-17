@@ -60,7 +60,7 @@ PFS_CHUNK_SIZE[3]=67108864
 # OBJECT_CHUNK_SIZE=2
 # OBJECT_SIZE=2048
 
-message () { echo "$@" | tee $logfile; }
+message () { echo "$@" | tee -a $logfile; }
 die () { message "Error $@"; exit 1; }
 
 # Generate aprun -L comma-separated node lists
