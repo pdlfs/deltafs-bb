@@ -68,7 +68,7 @@ enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
 
 #define NUM_SERVER_CONFIGS 10 // keep in sync with configs enum and config_names
-char config_names[NUM_CONFIGS][PATH_LEN] = {
+char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
   "BB_Server_Port",
   "BB_Lustre_chunk_size",
   "BB_Mercury_transfer_size",
@@ -82,12 +82,12 @@ char config_names[NUM_CONFIGS][PATH_LEN] = {
 };
 enum server_configs {
   PORT,
-  PFS_CHUNK_SIZE,
-  OBJ_CHUNK_SIZE,
+  LUSTRE_CHUNK_SIZE,
+  MERCURY_CHUNK_SIZE,
   WORKER_THREADS,
-  BINPACKING_THRESHOLD,
-  BINPACKING_POLICY,
-  OBJ_DIRTY_THRESHOLD,
+  BINPACKING_THRESHOLD_SIZE,
+  BINPACKING_POLICY_NAME,
+  OBJ_DIRTY_THRESHOLD_SIZE,
   MAX_CONTAINER_SIZE,
   SERVER_IP,
   OUTPUT_DIR

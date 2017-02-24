@@ -375,13 +375,14 @@ class BuddyServer
       binpacking_policy = RR_WITH_CURSOR;
       OBJECT_DIRTY_THRESHOLD = 268435456; // 256 MB
       CONTAINER_SIZE = 10737418240; // 10 GB
-      char rpc_protocol[PATH_LEN] = "cci"; // CCI protocol to be used by default
+      // char rpc_protocol[PATH_LEN] = "cci"; // CCI protocol to be used by default
       char output_dir[PATH_LEN] = "/tmp";
+      char server_ip[PATH_LEN];
 
       /* Now scan the environment vars to find out what to override. */
-      enum config config_overrides = 0;
+      int config_overrides = 0;
       while (config_overrides < NUM_SERVER_CONFIGS) {
-        const char *v = getenv(config_names[config_overrides])
+        const char *v = getenv(config_names[config_overrides]);
         if(v != NULL) {
           switch (config_overrides) {
             case 0: port = atoi(v);
@@ -402,19 +403,19 @@ class BuddyServer
                     break;
             case 8: snprintf(server_ip, PATH_LEN, "%s", v);
                     break;
-            case 9: snprintf(output_dir, PATH_LEN, "%s", v)
+            case 9: snprintf(output_dir, PATH_LEN, "%s", v);
                     break;
           }
-          config_overrides++;
         }
+        config_overrides++;
       }
 
-      hg_thread_pool_init(atoi(v), &num_worker_threads);
+      hg_thread_pool_init(num_worker_threads, &thread_pool);
 
       // output manifest file
       snprintf(output_manifest, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir);
 
-      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip, port);
+      snprintf(server_url, PATH_LEN, "tcp+cci://%s:%d", server_ip, port);
       server_network_class = NA_Initialize(server_url, NA_TRUE);
       assert(server_network_class);
 

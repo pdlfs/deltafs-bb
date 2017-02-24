@@ -38,15 +38,32 @@ void read_data(BuddyClient *bc, const char *name, char *output, int num_chars) {
   } while(total_data_read < num_chars);
 }
 
-/**
- * argv[1] = object name
- * argv[2] = config file path
- * argv[3] = object size
- * argv[4] = chunk size
- */
 int main(int argc, char **argv) {
-  size_t file_size = strtoul(argv[3], NULL, 0);
-  size_t chunk_size = strtoul(argv[4], NULL, 0);
+  size_t file_size = 0;
+  char obj_name[PATH_LEN] = "";
+  size_t chunk_size = 0;
+
+  const char *v = getenv("BB_Object_name");
+  if(v == NULL) {
+    snprintf(obj_name, PATH_LEN, "%s", v);
+    printf("BB_Object_name not set!");
+    assert(0);
+  }
+
+  v = getenv("BB_Mercury_size");
+  if(v == NULL) {
+    chunk_size = strtoul(v, NULL, 0);
+    printf("BB_Mercury_size not set!");
+    assert(0);
+  }
+
+  v = getenv("BB_Object_size");
+  if(v == NULL) {
+    file_size = strtoul(v, NULL, 0);
+    printf("BB_Object_size not set!");
+    assert(0);
+  }
+
   char *input = (char *) malloc (sizeof(char) * chunk_size);
   char *output = (char *) malloc (sizeof(char) * chunk_size * (file_size / chunk_size));
   srand(time(0));
@@ -59,8 +76,8 @@ int main(int argc, char **argv) {
     printf("Not enough arguments for testing client.\n");
     exit(1);
   }
-  BuddyClient *bc = new BuddyClient(argv[2]);
-  ret = bc->mkobj(argv[1]);
+  BuddyClient *bc = new BuddyClient();
+  ret = bc->mkobj(obj_name);
   assert(ret == 0);
   uint64_t num_chunks = (file_size / chunk_size);
   for(uint64_t n=0; n<num_chunks; n++) {

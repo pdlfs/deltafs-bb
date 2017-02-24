@@ -10,11 +10,8 @@
 using namespace pdlfs;
 using namespace bb;
 
-/**
- * argv[1] - server config file
- */
 int main(int argc, char **argv) {
-  BuddyServer *bs = new BuddyServer(argv[1]);
+  BuddyServer *bs = new BuddyServer();
   delete bs;
   return 0;
 }
