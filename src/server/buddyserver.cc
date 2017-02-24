@@ -414,7 +414,6 @@ class BuddyServer
 
       // output manifest file
       snprintf(output_manifest, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir);
-      // printf("output dir = %s\n", output_dir);
 
       snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip, port);
       server_network_class = NA_Initialize(server_url, NA_TRUE);
@@ -526,7 +525,6 @@ class BuddyServer
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
       snprintf(c_path, PATH_LEN, "%s/%s", output_dir, c_name);
-      printf("output container path = %s\n", c_path);
       binpack_segment_t b_obj;
       size_t data_written = 0;
       off_t c_offset = 0;

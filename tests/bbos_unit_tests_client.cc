@@ -45,24 +45,24 @@ int main(int argc, char **argv) {
 
   const char *v = getenv("BB_Object_name");
   if(v == NULL) {
-    snprintf(obj_name, PATH_LEN, "%s", v);
     printf("BB_Object_name not set!");
     assert(0);
   }
+  snprintf(obj_name, PATH_LEN, "%s", v);
 
   v = getenv("BB_Mercury_transfer_size");
   if(v == NULL) {
-    chunk_size = strtoul(v, NULL, 0);
     printf("BB_Mercury_transfer_size not set!");
     assert(0);
   }
+  chunk_size = strtoul(v, NULL, 0);
 
   v = getenv("BB_Object_size");
   if(v == NULL) {
-    file_size = strtoul(v, NULL, 0);
     printf("BB_Object_size not set!");
     assert(0);
   }
+  file_size = strtoul(v, NULL, 0);
 
   char *input = (char *) malloc (sizeof(char) * chunk_size);
   char *output = (char *) malloc (sizeof(char) * chunk_size * (file_size / chunk_size));
@@ -72,16 +72,12 @@ int main(int argc, char **argv) {
   }
   int ret;
   size_t size = 0;
-  if(argc < 5) {
-    printf("Not enough arguments for testing client.\n");
-    exit(1);
-  }
   BuddyClient *bc = new BuddyClient();
   ret = bc->mkobj(obj_name);
   assert(ret == 0);
   uint64_t num_chunks = (file_size / chunk_size);
   for(uint64_t n=0; n<num_chunks; n++) {
-      write_data(bc, argv[1], input, chunk_size);
+      write_data(bc, obj_name, input, chunk_size);
   }
   // FIXME: uncomment while performing read tests
   // num_chunks = (file_size / chunk_size);
