@@ -67,6 +67,32 @@ enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
 
+#define NUM_SERVER_CONFIGS 10 // keep in sync with configs enum and config_names
+char config_names[NUM_CONFIGS][PATH_LEN] = {
+  "BB_Server_Port",
+  "BB_Lustre_chunk_size",
+  "BB_Mercury_transfer_size",
+  "BB_Num_workers",
+  "BB_Binpacking_threshold",
+  "BB_Binpacking_policy",
+  "BB_Object_dirty_threshold",
+  "BB_Max_container_size",
+  "BB_Server_IP_address",
+  "BB_Output_dir"
+};
+enum server_configs {
+  PORT,
+  PFS_CHUNK_SIZE,
+  OBJ_CHUNK_SIZE,
+  WORKER_THREADS,
+  BINPACKING_THRESHOLD,
+  BINPACKING_POLICY,
+  OBJ_DIRTY_THRESHOLD,
+  MAX_CONTAINER_SIZE,
+  SERVER_IP,
+  OUTPUT_DIR
+};
+
 typedef struct {
   pthread_t thread;
   std::list<struct hg_cb_info *> queue;

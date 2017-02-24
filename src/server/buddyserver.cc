@@ -137,12 +137,13 @@ class BuddyServer
     struct sigaction sa;
     size_t OBJECT_DIRTY_THRESHOLD;
     size_t CONTAINER_SIZE;
-    char dw_mount_point[PATH_LEN];
+    char output_dir[PATH_LEN];
     pthread_mutex_t bbos_mutex;
     int containers_built;
     char output_manifest[PATH_LEN];
     char server_url[PATH_LEN];
     int port;
+    int num_worker_threads;
 
     chunk_info_t *make_chunk(chunkid_t id) {
       chunk_info_t *new_chunk = new chunk_info_t;
@@ -364,46 +365,58 @@ class BuddyServer
     }
 
   public:
-    BuddyServer(const char *config_file) {
-      assert(config_file != NULL);
-      std::ifstream configuration(config_file);
-      if(!configuration) {
-        exit(-BB_CONFIG_ERROR);
-      }
-      int i = 0;
-      const char *out_manifest;
-      char knob[PATH_LEN];
-      char output_file_name[PATH_LEN];
-      while(configuration >> knob) {
-        switch (i) {
-          case 0: snprintf(output_file_name, PATH_LEN, "%s", knob);
-                  break;
-          case 1: port = atoi(knob);
-                  break;
-          case 2: PFS_CHUNK_SIZE = strtoul(knob, NULL, 0);
-                  break;
-          case 3: OBJ_CHUNK_SIZE = strtoul(knob, NULL, 0);
-                  break;
-          case 4: hg_thread_pool_init(atoi(knob), &thread_pool);
-                  break;
-          case 5: binpacking_threshold = strtoul(knob, NULL, 0);
-                  break;
-          case 6: binpacking_policy = (binpacking_policy_t) atoi(knob);
-                  break;
-          case 7: OBJECT_DIRTY_THRESHOLD = strtoul(knob, NULL, 0);
-                  break;
-          case 8: CONTAINER_SIZE = strtoul(knob, NULL, 0);
-                  break;
-          case 9: snprintf(server_url, PATH_LEN, "tcp://%s:%d", knob, port);
-                  server_network_class = NA_Initialize(server_url, NA_TRUE);
-                  assert(server_network_class);
-                  break;
-          case 10: snprintf(output_manifest, PATH_LEN, "%s/%s", knob, output_file_name); // output manifest file
-                   strncpy(dw_mount_point, knob, PATH_LEN); // DW mount point
-                   break;
+    BuddyServer() {
+      /* Default configs */
+      port = 19900;
+      PFS_CHUNK_SIZE = 8388608; // 8 MB
+      OBJ_CHUNK_SIZE = 2097152; // 2 MB
+      num_worker_threads = 32; // number of worker threads
+      binpacking_threshold = 21474836480; // 20 GB before triggering binpacking
+      binpacking_policy = RR_WITH_CURSOR;
+      OBJECT_DIRTY_THRESHOLD = 268435456; // 256 MB
+      CONTAINER_SIZE = 10737418240; // 10 GB
+      char rpc_protocol[PATH_LEN] = "cci"; // CCI protocol to be used by default
+      char output_dir[PATH_LEN] = "/tmp";
+
+      /* Now scan the environment vars to find out what to override. */
+      enum config config_overrides = 0;
+      while (config_overrides < NUM_SERVER_CONFIGS) {
+        const char *v = getenv(config_names[config_overrides])
+        if(v != NULL) {
+          switch (config_overrides) {
+            case 0: port = atoi(v);
+                    break;
+            case 1: PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 2: OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 3: num_worker_threads = atoi(v);
+                    break;
+            case 4: binpacking_threshold = strtoul(v, NULL, 0);
+                    break;
+            case 5: binpacking_policy = (binpacking_policy_t) atoi(v);
+                    break;
+            case 6: OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
+                    break;
+            case 7: CONTAINER_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 8: snprintf(server_ip, PATH_LEN, "%s", v);
+                    break;
+            case 9: snprintf(output_dir, PATH_LEN, "%s", v)
+                    break;
+          }
+          config_overrides++;
         }
-        i++;
       }
+
+      hg_thread_pool_init(atoi(v), &num_worker_threads);
+
+      // output manifest file
+      snprintf(output_manifest, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir);
+
+      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip, port);
+      server_network_class = NA_Initialize(server_url, NA_TRUE);
+      assert(server_network_class);
 
       /* signal handling to capture ctrl + c */
       memset( &sa, 0, sizeof(sa) );
@@ -510,7 +523,7 @@ class BuddyServer
     int build_container(const char *c_name,
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
-      snprintf(c_path, PATH_LEN, "%s/%s", dw_mount_point, c_name);
+      snprintf(c_path, PATH_LEN, "%s/%s", output_dir, c_name);
       binpack_segment_t b_obj;
       size_t data_written = 0;
       off_t c_offset = 0;

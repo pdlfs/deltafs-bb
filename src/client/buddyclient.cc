@@ -218,7 +218,41 @@ class BuddyClient
     int port;
 
   public:
-    BuddyClient(const char *config_file) {
+    BuddyClient() {
+      /* Default configs */
+      port = 19900;
+
+      /* Now scan the environment vars to find out what to override. */
+      enum client_configs config_overrides = 0;
+      while (config_overrides < NUM_CLIENT_CONFIGS) {
+        const char *v = getenv(config_names[config_overrides])
+        if(v != NULL) {
+          switch (config_overrides) {
+            case 0: port = atoi(v);
+                    break;
+            case 1: PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 2: OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 3: num_worker_threads = atoi(v);
+                    break;
+            case 4: binpacking_threshold = strtoul(v, NULL, 0);
+                    break;
+            case 5: binpacking_policy = (binpacking_policy_t) atoi(v);
+                    break;
+            case 6: OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
+                    break;
+            case 7: CONTAINER_SIZE = strtoul(v, NULL, 0);
+                    break;
+            case 8: snprintf(server_ip, PATH_LEN, "%s", v);
+                    break;
+            case 9: snprintf(output_dir, PATH_LEN, "%s", v)
+                    break;
+          }
+          config_overrides++;
+        }
+      }
+
       assert(config_file != NULL);
       na_return_t na_ret;
       std::ifstream configuration(config_file);

@@ -27,6 +27,14 @@ enum ACTION {MKOBJ, APPEND, READ, GET_SIZE};
 
 #define BB_CONFIG_ERROR 3
 
+#define NUM_CLIENT_CONFIGS 1 // keep in sync with configs enum and config_names
+char config_names[NUM_CLIENT_CONFIGS][PATH_LEN] = {
+  "BB_Server_Port"
+};
+enum client_configs {
+  PORT
+};
+
 MERCURY_GEN_PROC(bbos_mkobj_in_t,
     ((hg_const_string_t)(name))\
     ((hg_bool_t)(type)))
