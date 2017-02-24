@@ -231,6 +231,8 @@ class BuddyClient
           switch (config_overrides) {
             case 0: port = atoi(v);
                     break;
+            case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", v, port);
+                    break;
           }
           config_overrides++;
         }
@@ -242,7 +244,7 @@ class BuddyClient
       hg_class = NULL;
 
       /* start mercury and register RPC */
-      network_class = NA_Initialize("tcp+cci", NA_FALSE);
+      network_class = NA_Initialize("tcp", NA_FALSE);
       assert(network_class);
 
       hg_class = HG_Init_na(network_class);

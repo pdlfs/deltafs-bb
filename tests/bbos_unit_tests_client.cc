@@ -50,10 +50,10 @@ int main(int argc, char **argv) {
     assert(0);
   }
 
-  v = getenv("BB_Mercury_size");
+  v = getenv("BB_Mercury_transfer_size");
   if(v == NULL) {
     chunk_size = strtoul(v, NULL, 0);
-    printf("BB_Mercury_size not set!");
+    printf("BB_Mercury_transfer_size not set!");
     assert(0);
   }
 

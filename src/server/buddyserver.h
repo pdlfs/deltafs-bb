@@ -69,7 +69,7 @@ enum stage_in_policy { SEQ_IN, PAR_IN };
 
 #define NUM_SERVER_CONFIGS 10 // keep in sync with configs enum and config_names
 char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
-  "BB_Server_Port",
+  "BB_Server_port",
   "BB_Lustre_chunk_size",
   "BB_Mercury_transfer_size",
   "BB_Num_workers",

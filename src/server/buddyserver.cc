@@ -376,7 +376,7 @@ class BuddyServer
       OBJECT_DIRTY_THRESHOLD = 268435456; // 256 MB
       CONTAINER_SIZE = 10737418240; // 10 GB
       // char rpc_protocol[PATH_LEN] = "cci"; // CCI protocol to be used by default
-      char output_dir[PATH_LEN] = "/tmp";
+      snprintf(output_dir, PATH_LEN, "/tmp");
       char server_ip[PATH_LEN];
 
       /* Now scan the environment vars to find out what to override. */
@@ -414,8 +414,9 @@ class BuddyServer
 
       // output manifest file
       snprintf(output_manifest, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir);
+      // printf("output dir = %s\n", output_dir);
 
-      snprintf(server_url, PATH_LEN, "tcp+cci://%s:%d", server_ip, port);
+      snprintf(server_url, PATH_LEN, "tcp://%s:%d", server_ip, port);
       server_network_class = NA_Initialize(server_url, NA_TRUE);
       assert(server_network_class);
 
@@ -525,13 +526,14 @@ class BuddyServer
       std::list<binpack_segment_t> lst_binpack_segments) {
       char c_path[PATH_LEN];
       snprintf(c_path, PATH_LEN, "%s/%s", output_dir, c_name);
+      printf("output container path = %s\n", c_path);
       binpack_segment_t b_obj;
       size_t data_written = 0;
       off_t c_offset = 0;
       timespec chunk_diff_ts;
       timespec container_diff_ts;
       clock_gettime(CLOCK_REALTIME, &container_ts_before);
-      FILE *fp = fopen(c_path, "w+");;
+      FILE *fp = fopen(c_path, "w+");
       assert(fp != NULL);
       std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
       fprintf(fp, "%lu\n", lst_binpack_segments.size());

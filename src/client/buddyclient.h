@@ -27,9 +27,10 @@ enum ACTION {MKOBJ, APPEND, READ, GET_SIZE};
 
 #define BB_CONFIG_ERROR 3
 
-#define NUM_CLIENT_CONFIGS 1 // keep in sync with configs enum and config_names
+#define NUM_CLIENT_CONFIGS 2 // keep in sync with configs enum and config_names
 char config_names[NUM_CLIENT_CONFIGS][PATH_LEN] = {
-  "BB_Server_Port"
+  "BB_Server_port",
+  "BB_Server_IP_address"
 };
 enum client_configs {
   PORT
