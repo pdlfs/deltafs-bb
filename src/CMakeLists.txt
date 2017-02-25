@@ -27,6 +27,9 @@ target_link_libraries(bbos_server deltafs-bb)
 add_executable(bbos_client ../tests/bbos_unit_tests_client.cc)
 target_link_libraries(bbos_client deltafs-bb)
 
+add_executable(eval_bb ../tests/eval_bb.c)
+target_link_libraries(eval_bb deltafs-bb)
+
 #
 # "make install" rules
 #
