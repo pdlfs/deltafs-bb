@@ -4,6 +4,13 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <net/if.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
 #include "../src/client/buddyclient.cc"
 
 using namespace pdlfs;
@@ -42,15 +49,26 @@ int main(int argc, char **argv) {
   size_t file_size = 0;
   char obj_name[PATH_LEN] = "";
   size_t chunk_size = 0;
+  struct ifaddrs *tmp, *addrs;
+  int fd;
+  struct ifreq ifr;
 
-  const char *v = getenv("BB_Object_name");
-  if(v == NULL) {
-    printf("BB_Object_name not set!");
-    assert(0);
-  }
-  snprintf(obj_name, PATH_LEN, "%s", v);
+  char iface[] = "eth0";
 
-  v = getenv("BB_Mercury_transfer_size");
+  fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+  //Type of address to retrieve - IPv4 IP address
+  ifr.ifr_addr.sa_family = AF_INET;
+
+  //Copy the interface name in the ifreq structure
+  strncpy(ifr.ifr_name , iface , IFNAMSIZ-1);
+
+  ioctl(fd, SIOCGIFADDR, &ifr);
+
+  close(fd);
+  snprintf(obj_name, PATH_LEN, "%s", inet_ntoa(( (struct sockaddr_in *)&ifr.ifr_addr )->sin_addr));
+
+  const char *v = getenv("BB_Mercury_transfer_size");
   if(v == NULL) {
     printf("BB_Mercury_transfer_size not set!");
     assert(0);
