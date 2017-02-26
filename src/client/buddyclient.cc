@@ -18,10 +18,19 @@
 #include <fstream>
 #include <unistd.h>
 #include <map>
-#include "buddyclient.h"
+#include "../../include/buddyclient.h"
 
 namespace pdlfs {
 namespace bb {
+
+#define NUM_CLIENT_CONFIGS 2 // keep in sync with configs enum and config_names
+char config_names[NUM_CLIENT_CONFIGS][PATH_LEN] = {
+  "BB_Server_port",
+  "BB_Server_IP_address"
+};
+enum client_configs {
+  PORT
+};
 
 static int done = 0;
 static pthread_cond_t done_cond = PTHREAD_COND_INITIALIZER;
@@ -211,160 +220,153 @@ static hg_return_t issue_get_size_rpc(struct operation_details *op) {
   return ((hg_return_t)NA_SUCCESS);
 }
 
-class BuddyClient
-{
-  private:
-    hg_thread_t progress_thread;
-    int port;
 
-  public:
-    BuddyClient() {
-      /* Default configs */
-      port = 19900;
+BuddyClient::BuddyClient() {
+  /* Default configs */
+  port = 19900;
 
-      /* Now scan the environment vars to find out what to override. */
-      // enum client_configs config_overrides = (pdlfs::bb::client_configs) 0;
-      int config_overrides;
-      while (config_overrides < NUM_CLIENT_CONFIGS) {
-        const char *v = getenv(config_names[config_overrides]);
-        if(v != NULL) {
-          switch (config_overrides) {
-            case 0: port = atoi(v);
-                    break;
-            case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", v, port);
-                    break;
-          }
-          config_overrides++;
-        }
+  /* Now scan the environment vars to find out what to override. */
+  // enum client_configs config_overrides = (pdlfs::bb::client_configs) 0;
+  int config_overrides;
+  while (config_overrides < NUM_CLIENT_CONFIGS) {
+    const char *v = getenv(config_names[config_overrides]);
+    if(v != NULL) {
+      switch (config_overrides) {
+        case 0: port = atoi(v);
+                break;
+        case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", v, port);
+                break;
       }
-
-      na_return_t na_ret;
-      network_class = NULL;
-      hg_context = NULL;
-      hg_class = NULL;
-
-      /* start mercury and register RPC */
-      network_class = NA_Initialize("tcp", NA_FALSE);
-      assert(network_class);
-
-      hg_class = HG_Init_na(network_class);
-      assert(hg_class);
-
-      hg_context = HG_Context_create(hg_class);
-      assert(hg_context);
-
-      hg_progress_shutdown_flag = false;
-      hg_thread_create(&progress_thread, client_rpc_progress_fn, hg_context);
-      mkobj_rpc_id = MERCURY_REGISTER(hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_rpc_handler);
-      append_rpc_id = MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
-      read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
-      get_size_rpc_id = MERCURY_REGISTER(hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_rpc_handler);
-
-      /* lookup address only once */
-      na_ret = (na_return_t)HG_Addr_lookup(hg_context, lookup_address, NULL, server_url, HG_OP_ID_IGNORE);
-      assert(na_ret == NA_SUCCESS);
-
-      pthread_mutex_lock(&done_mutex);
-      while(done < 1)
-        pthread_cond_wait(&done_cond, &done_mutex);
-      done--;
-      pthread_mutex_unlock(&done_mutex);
+      config_overrides++;
     }
+  }
 
-    ~BuddyClient() {
-      while (pending_replies.size() > 0) {
-        sleep(1);
-      }
-      hg_return_t ret = HG_SUCCESS;
-      ret = HG_Hl_finalize();
-      assert(ret == HG_SUCCESS);
-    }
+  na_return_t na_ret;
+  network_class = NULL;
+  hg_context = NULL;
+  hg_class = NULL;
 
-    int mkobj(const char *name, mkobj_flag_t type=WRITE_OPTIMIZED) {
-      struct operation_details *op = new operation_details;
-      sprintf(op->name, "%s", name);
-      int retval = -1;
-      hg_return_t rpc_ret;
-      op->action = MKOBJ;
-      op->input.mkobj_in.name = (const char *) op->name;
-      op->input.mkobj_in.type = (hg_bool_t) type;
-      rpc_ret = issue_mkobj_rpc(op);
-      assert(rpc_ret == HG_SUCCESS);
-      pthread_mutex_lock(&done_mutex);
-      while(done < 1)
-        pthread_cond_wait(&done_cond, &done_mutex);
-      done--;
-      pthread_mutex_unlock(&done_mutex);
-      retval = op->output.mkobj_out.status;
-      free(op);
-      return retval;
-    }
+  /* start mercury and register RPC */
+  network_class = NA_Initialize("tcp", NA_FALSE);
+  assert(network_class);
 
-    size_t append(const char *name, void *buf, size_t len) {
-      struct operation_details *op = new operation_details;
-      sprintf(op->name, "%s", name);
-      size_t retval = 0;
-      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &(len),
-                            HG_BULK_READ_ONLY,
-                            &(op->input.append_in.bulk_handle));
-      assert(hg_ret == HG_SUCCESS);
-      op->action = APPEND;
-      hg_ret = issue_append_rpc(op);
-      assert(hg_ret == HG_SUCCESS);
-      pthread_mutex_lock(&done_mutex);
-      while(done < 1)
-        pthread_cond_wait(&done_cond, &done_mutex);
-      done--;
-      pthread_mutex_unlock(&done_mutex);
-      retval = (size_t) op->output.append_out.size;
-      HG_Bulk_free(op->input.append_in.bulk_handle);
-      free(op);
-      return retval;
-    }
+  hg_class = HG_Init_na(network_class);
+  assert(hg_class);
 
-    size_t read(const char *name, void *buf, off_t offset, size_t len) {
-      struct operation_details *op = new operation_details;
-      sprintf(op->name, "%s", name);
-      int retval;
-      op->input.read_in.offset = (hg_size_t) offset;
-      op->input.read_in.size = (hg_size_t) len;
-      hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf,
-                            &(op->input.read_in.size),
-                            HG_BULK_READWRITE,
-                            &(op->input.read_in.bulk_handle));
-      assert(hg_ret == HG_SUCCESS);
-      op->action = READ;
-      hg_ret = issue_read_rpc(op);
-      assert(hg_ret == HG_SUCCESS);
-      pthread_mutex_lock(&done_mutex);
-      while(done < 1)
-        pthread_cond_wait(&done_cond, &done_mutex);
-      done--;
-      pthread_mutex_unlock(&done_mutex);
-      retval = (size_t) op->output.read_out.size;
-      HG_Bulk_free(op->input.read_in.bulk_handle);
-      free(op);
-      return retval;
-    }
+  hg_context = HG_Context_create(hg_class);
+  assert(hg_context);
 
-    int get_size(const char *name) {
-      struct operation_details *op = new operation_details;
-      sprintf(op->name, "%s", name);
-      int retval = -1;
-      hg_return_t ret_rpc;
-      op->action = GET_SIZE;
-      ret_rpc = issue_get_size_rpc(op);
-      assert(ret_rpc == HG_SUCCESS);
-      pthread_mutex_lock(&done_mutex);
-      while(done < 1)
-        pthread_cond_wait(&done_cond, &done_mutex);
-      done--;
-      pthread_mutex_unlock(&done_mutex);
-      retval = op->output.get_size_out.size;
-      free(op);
-      return retval;
-    }
-};
+  hg_progress_shutdown_flag = false;
+  hg_thread_create(&progress_thread, client_rpc_progress_fn, hg_context);
+  mkobj_rpc_id = MERCURY_REGISTER(hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_rpc_handler);
+  append_rpc_id = MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
+  read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
+  get_size_rpc_id = MERCURY_REGISTER(hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_rpc_handler);
+
+  /* lookup address only once */
+  na_ret = (na_return_t)HG_Addr_lookup(hg_context, lookup_address, NULL, server_url, HG_OP_ID_IGNORE);
+  assert(na_ret == NA_SUCCESS);
+
+  pthread_mutex_lock(&done_mutex);
+  while(done < 1)
+    pthread_cond_wait(&done_cond, &done_mutex);
+  done--;
+  pthread_mutex_unlock(&done_mutex);
+}
+
+BuddyClient::~BuddyClient() {
+  while (pending_replies.size() > 0) {
+    sleep(1);
+  }
+  hg_return_t ret = HG_SUCCESS;
+  ret = HG_Hl_finalize();
+  assert(ret == HG_SUCCESS);
+}
+
+int BuddyClient::mkobj(const char *name, mkobj_flag_t type) {
+  struct operation_details *op = new operation_details;
+  sprintf(op->name, "%s", name);
+  int retval = -1;
+  hg_return_t rpc_ret;
+  op->action = MKOBJ;
+  op->input.mkobj_in.name = (const char *) op->name;
+  op->input.mkobj_in.type = (hg_bool_t) type;
+  rpc_ret = issue_mkobj_rpc(op);
+  assert(rpc_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  while(done < 1)
+    pthread_cond_wait(&done_cond, &done_mutex);
+  done--;
+  pthread_mutex_unlock(&done_mutex);
+  retval = op->output.mkobj_out.status;
+  free(op);
+  return retval;
+}
+
+size_t BuddyClient::append(const char *name, void *buf, size_t len) {
+  struct operation_details *op = new operation_details;
+  sprintf(op->name, "%s", name);
+  size_t retval = 0;
+  hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &(len),
+      HG_BULK_READ_ONLY,
+      &(op->input.append_in.bulk_handle));
+  assert(hg_ret == HG_SUCCESS);
+  op->action = APPEND;
+  hg_ret = issue_append_rpc(op);
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  while(done < 1)
+    pthread_cond_wait(&done_cond, &done_mutex);
+  done--;
+  pthread_mutex_unlock(&done_mutex);
+  retval = (size_t) op->output.append_out.size;
+  HG_Bulk_free(op->input.append_in.bulk_handle);
+  free(op);
+  return retval;
+}
+
+size_t BuddyClient::read(const char *name, void *buf, off_t offset, size_t len) {
+  struct operation_details *op = new operation_details;
+  sprintf(op->name, "%s", name);
+  int retval;
+  op->input.read_in.offset = (hg_size_t) offset;
+  op->input.read_in.size = (hg_size_t) len;
+  hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf,
+      &(op->input.read_in.size),
+      HG_BULK_READWRITE,
+      &(op->input.read_in.bulk_handle));
+  assert(hg_ret == HG_SUCCESS);
+  op->action = READ;
+  hg_ret = issue_read_rpc(op);
+  assert(hg_ret == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  while(done < 1)
+    pthread_cond_wait(&done_cond, &done_mutex);
+  done--;
+  pthread_mutex_unlock(&done_mutex);
+  retval = (size_t) op->output.read_out.size;
+  HG_Bulk_free(op->input.read_in.bulk_handle);
+  free(op);
+  return retval;
+}
+
+int BuddyClient::get_size(const char *name) {
+  struct operation_details *op = new operation_details;
+  sprintf(op->name, "%s", name);
+  int retval = -1;
+  hg_return_t ret_rpc;
+  op->action = GET_SIZE;
+  ret_rpc = issue_get_size_rpc(op);
+  assert(ret_rpc == HG_SUCCESS);
+  pthread_mutex_lock(&done_mutex);
+  while(done < 1)
+    pthread_cond_wait(&done_cond, &done_mutex);
+  done--;
+  pthread_mutex_unlock(&done_mutex);
+  retval = op->output.get_size_out.size;
+  free(op);
+  return retval;
+}
 
 } // namespace bb
 } // namespace pdlfs

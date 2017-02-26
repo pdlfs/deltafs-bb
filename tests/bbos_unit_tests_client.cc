@@ -11,7 +11,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
-#include "../src/client/buddyclient.cc"
+#include "../include/buddyclient.h"
 
 using namespace pdlfs;
 using namespace bb;

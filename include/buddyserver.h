@@ -7,6 +7,8 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
+#pragma once
+
 #include <list>
 #include <map>
 #include <mercury_hl_macros.h>
@@ -18,6 +20,20 @@
 #include <mercury_thread.h>
 #include <mercury_config.h>
 #include <mercury_thread_pool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <assert.h>
+#include <stdlib.h>
+#include <iostream>
+#include <string>
+#include <string.h>
+#include <sstream>
+#include <fstream>
+#include <unistd.h>
+#include <aio.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/time.h>
 
 namespace pdlfs {
 namespace bb {
@@ -67,32 +83,6 @@ enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum stage_out_policy { SEQ_OUT, PAR_OUT };
 enum stage_in_policy { SEQ_IN, PAR_IN };
 
-#define NUM_SERVER_CONFIGS 10 // keep in sync with configs enum and config_names
-char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
-  "BB_Server_port",
-  "BB_Lustre_chunk_size",
-  "BB_Mercury_transfer_size",
-  "BB_Num_workers",
-  "BB_Binpacking_threshold",
-  "BB_Binpacking_policy",
-  "BB_Object_dirty_threshold",
-  "BB_Max_container_size",
-  "BB_Server_IP_address",
-  "BB_Output_dir"
-};
-enum server_configs {
-  PORT,
-  LUSTRE_CHUNK_SIZE,
-  MERCURY_CHUNK_SIZE,
-  WORKER_THREADS,
-  BINPACKING_THRESHOLD_SIZE,
-  BINPACKING_POLICY_NAME,
-  OBJ_DIRTY_THRESHOLD_SIZE,
-  MAX_CONTAINER_SIZE,
-  SERVER_IP,
-  OUTPUT_DIR
-};
-
 typedef struct {
   pthread_t thread;
   std::list<struct hg_cb_info *> queue;
@@ -130,6 +120,59 @@ typedef struct {
   chunkid_t end_chunk;
   off_t offset;
 } container_segment_t;
+
+class BuddyServer
+{
+  private:
+    std::map<std::string, bbos_obj_t *> *object_map;
+    std::map<std::string, std::list<container_segment_t *> *> *object_container_map;
+    size_t dirty_bbos_size;
+    size_t dirty_individual_size;
+    size_t binpacking_threshold;
+    binpacking_policy_t binpacking_policy;
+    std::list<bbos_obj_t *> *lru_objects;
+    std::list<bbos_obj_t *> *individual_objects;
+    pthread_t binpacking_thread;
+    pthread_t progress_thread;
+    struct sigaction sa;
+    size_t OBJECT_DIRTY_THRESHOLD;
+    size_t CONTAINER_SIZE;
+    char output_dir[PATH_LEN];
+    pthread_mutex_t bbos_mutex;
+    int containers_built;
+    char output_manifest[PATH_LEN];
+    char server_url[PATH_LEN];
+    int port;
+    int num_worker_threads;
+
+    chunk_info_t *make_chunk(chunkid_t id);
+    size_t add_data(chunk_info_t *chunk, void *buf, size_t len);
+    size_t get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len);
+    std::list<binpack_segment_t> all_binpacking_policy();
+    std::list<binpack_segment_t> rr_with_cursor_binpacking_policy();
+    std::list<binpack_segment_t> get_all_segments();
+    void build_global_manifest(const char *manifest_name);
+    int build_object_container_map(const char *container_name);
+    bbos_obj_t *create_bbos_cache_entry(const char *name, mkobj_flag_t type);
+
+  public:
+    BuddyServer();
+    ~BuddyServer();
+    std::list<binpack_segment_t> get_objects(container_flag_t type=COMBINED);
+    int build_container(const char *c_name,
+      std::list<binpack_segment_t> lst_binpack_segments);
+    int mkobj(const char *name, mkobj_flag_t type=WRITE_OPTIMIZED);
+    int lock_server();
+    int unlock_server();
+    size_t get_dirty_size();
+    uint32_t get_individual_obj_count();
+    size_t get_binpacking_threshold();
+    size_t get_binpacking_policy();
+    const char *get_next_container_name(char *path, container_flag_t type);
+    size_t get_size(const char *name);
+    size_t append(const char *name, void *buf, size_t len);
+    size_t read(const char *name, void *buf, off_t offset, size_t len);
+};
 
 } // namespace bb
 } // namespace pdlfs

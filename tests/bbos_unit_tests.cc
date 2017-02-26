@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
-#include "../src/server/buddyserver.cc"
+#include "../include/buddyserver.h"
 
 using namespace pdlfs;
 using namespace bb;
