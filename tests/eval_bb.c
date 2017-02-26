@@ -1,12 +1,18 @@
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <assert.h>
 
 int main() {
-  char *fname = getenv("BB_Dummy_file");
-  uint64_t pchunk = strtoul(getenv("BB_Lustre_chunk_size"), NULL, 0);
+  const char *fname = getenv("BB_Dummy_file");
+  const char *v = getenv("BB_Lustre_chunk_size");
+  unsigned long pchunk = strtoul(v, NULL, 0);
   char command[512];
-  uint64_t container_size = strtoul(genenv("BB_Max_container_size"), NULL, 0);
+  v = getenv("BB_Max_container_size");
+  unsigned long container_size = strtoul(v, NULL, 0);
   uint64_t count = (container_size / pchunk);
   snprintf(command, 512, "dd if=/dev/zero of=%s bs=%lu count=%lu", fname, pchunk, count);
-  system(command);
+  int ret = system(command);
+  assert(ret == 0);
   return 0;
 }
