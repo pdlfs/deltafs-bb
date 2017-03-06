@@ -237,8 +237,8 @@ BuddyClient::BuddyClient() {
         case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", v, port);
                 break;
       }
-      config_overrides++;
     }
+    config_overrides++;
   }
 
   na_return_t na_ret;
@@ -333,7 +333,7 @@ size_t BuddyClient::read(const char *name, void *buf, off_t offset, size_t len) 
   op->input.read_in.size = (hg_size_t) len;
   hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf,
       &(op->input.read_in.size),
-      HG_BULK_READWRITE,
+      HG_BULK_WRITE_ONLY,
       &(op->input.read_in.bulk_handle));
   assert(hg_ret == HG_SUCCESS);
   op->action = READ;
