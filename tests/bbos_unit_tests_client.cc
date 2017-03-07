@@ -66,19 +66,26 @@ int main(int argc, char **argv) {
   ioctl(fd, SIOCGIFADDR, &ifr);
 
   close(fd);
-  snprintf(obj_name, PATH_LEN, "%s", inet_ntoa(( (struct sockaddr_in *)&ifr.ifr_addr )->sin_addr));
-
   const char *v = getenv("BB_Mercury_transfer_size");
   if(v == NULL) {
     printf("BB_Mercury_transfer_size not set!");
-    assert(0);
+    exit(1);
   }
   chunk_size = strtoul(v, NULL, 0);
+
+  v = getenv("BB_Core_num");
+  if(v == NULL) {
+    printf("BB_Core_num not set\n");
+    exit(1);
+  }
+  int core_num = atoi(v);
+
+  snprintf(obj_name, PATH_LEN, "%s-%d", inet_ntoa(( (struct sockaddr_in *)&ifr.ifr_addr )->sin_addr), core_num);
 
   v = getenv("BB_Object_size");
   if(v == NULL) {
     printf("BB_Object_size not set!");
-    assert(0);
+    exit(1);
   }
   file_size = strtoul(v, NULL, 0);
 
