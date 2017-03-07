@@ -605,7 +605,7 @@ int BuddyServer::build_container(const char *c_name,
     b_obj = *it_bpack;
     it_bpack++;
     std::stringstream c_offset_stream;
-    c_offset_stream << std::setfill('0') << std::setw(8) << start_offset;
+    c_offset_stream << std::setfill('0') << std::setw(16) << start_offset;
     fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name, b_obj.start_chunk, b_obj.end_chunk, c_offset_stream.str().c_str());
     start_offset += (PFS_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
   }
