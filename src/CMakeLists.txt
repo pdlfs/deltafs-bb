@@ -33,6 +33,6 @@ target_link_libraries(eval_bb deltafs-bb)
 #
 # "make install" rules
 #
-install (TARGETS bbos_server bbos_client
+install (TARGETS bbos_server bbos_client eval_bb
          RUNTIME DESTINATION bin)
 
