@@ -49,7 +49,6 @@ int main(int argc, char **argv) {
   size_t file_size = 0;
   char obj_name[PATH_LEN] = "";
   size_t chunk_size = 0;
-  struct ifaddrs *tmp, *addrs;
   int fd;
   struct ifreq ifr;
 
@@ -90,13 +89,12 @@ int main(int argc, char **argv) {
   file_size = strtoul(v, NULL, 0);
 
   char *input = (char *) malloc (sizeof(char) * chunk_size);
-  char *output = (char *) malloc (sizeof(char) * chunk_size * (file_size / chunk_size));
+  //char *output = (char *) malloc (sizeof(char) * chunk_size * (file_size / chunk_size));
   srand(time(0));
   for(int i=0; i<chunk_size; i++) {
     input[i] = genRandom();
   }
   int ret;
-  size_t size = 0;
   void *bc = bbos_init(NULL);  /* XXX */
   ret = bbos_mkobj(bc, obj_name, WRITE_OPTIMIZED);
   if (ret != 0) abort();
