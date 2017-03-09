@@ -9,8 +9,11 @@ include (CheckCXXCompilerFlag)
 # additional compiler flags to be applied for this directory
 # (must come before any add_library/add_executable calls)
 #
-set (bbos-try-common-flags -Wpedantic -Wno-long-long -Wall
-                           -Wno-sign-compare -pthread)
+set (bbos-try-common-flags -Wpedantic -Wall
+     -Wno-variadic-macros     # using mercury with c++ triggers this
+     -Wno-sign-compare        # XXX: reconsider?
+     ### -Wno-long-long       # ok now?
+)
 foreach (lcv ${bbos-try-common-flags})
     CHECK_CXX_COMPILER_FLAG (${lcv} flag${lcv})
     if (${flag${lcv}})

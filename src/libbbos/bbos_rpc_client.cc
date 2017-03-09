@@ -22,6 +22,11 @@
 
 #include <mercury_bulk.h>
 #include <mercury_proc_string.h>
+
+/* XXX: Avoid compilation warning - mercury_thread.h redefines _GNU_SOURCE */
+#ifndef _WIN32
+    #undef _GNU_SOURCE
+#endif
 #include <mercury_thread.h>
 
 #include "bbos/bbos_api.h"
@@ -106,6 +111,7 @@ static void* client_rpc_progress_fn(void *args) {
       if(!hg_progress_shutdown_flag)
           HG_Progress(hg_context, 100);
   }
+  return(NULL);
 }
 
 static hg_return_t bbos_rpc_handler(hg_handle_t handle) {
@@ -125,7 +131,7 @@ static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.mkobj_out));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
   done++;
   pthread_cond_signal(&done_cond);
@@ -140,7 +146,7 @@ static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
 static hg_return_t issue_mkobj_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
   hg_ret = HG_Create(hg_context, server_addr, mkobj_rpc_id, &(op->handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   assert(op->handle);
 
   /* Fill input structure */
@@ -156,7 +162,7 @@ static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.append_out));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
 
   pthread_mutex_lock(&done_mutex);
   done++;
@@ -172,7 +178,7 @@ static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
 static hg_return_t issue_append_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
   hg_ret = HG_Create(hg_context, server_addr, append_rpc_id, &(op->handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   assert(op->handle);
 
   /* Fill input structure */
@@ -188,7 +194,7 @@ static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.read_out));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
   done++;
   pthread_cond_signal(&done_cond);
@@ -203,7 +209,7 @@ static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
 static hg_return_t issue_read_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
   hg_ret = HG_Create(hg_context, server_addr, read_rpc_id, &(op->handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   assert(op->handle);
 
   /* Fill input structure */
@@ -220,7 +226,7 @@ static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
   struct operation_details *op = (struct operation_details *)callback_info->arg;
   hg_return_t hg_ret;
   hg_ret = HG_Get_output(callback_info->info.forward.handle, &(op->output.get_size_out));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
   done++;
   pthread_cond_signal(&done_cond);
@@ -235,7 +241,7 @@ static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
 static hg_return_t issue_get_size_rpc(struct operation_details *op) {
   hg_return_t hg_ret;
   hg_ret = HG_Create(hg_context, server_addr, get_size_rpc_id, &(op->handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   assert(op->handle);
 
   /* Fill input structure */
@@ -254,7 +260,7 @@ BuddyClient::BuddyClient() {
 
   /* Now scan the environment vars to find out what to override. */
   // enum client_configs config_overrides = (pdlfs::bb::client_configs) 0;
-  int config_overrides;
+  int config_overrides = 0;
   while (config_overrides < NUM_CLIENT_CONFIGS) {
     const char *v = getenv(config_names[config_overrides]);
     if(v != NULL) {
@@ -292,7 +298,7 @@ BuddyClient::BuddyClient() {
 
   /* lookup address only once */
   na_ret = (na_return_t)HG_Addr_lookup(hg_context, lookup_address, NULL, server_url, HG_OP_ID_IGNORE);
-  assert(na_ret == NA_SUCCESS);
+  if (na_ret != NA_SUCCESS) abort();
 
   pthread_mutex_lock(&done_mutex);
   while(done < 1)
@@ -308,7 +314,7 @@ BuddyClient::~BuddyClient() {
   hg_return_t ret = HG_SUCCESS;
   HG_Context_destroy(hg_context);   /* XXX return value */
   HG_Finalize(hg_class);            /* XXX return value */
-  assert(ret == HG_SUCCESS);
+  if (ret != HG_SUCCESS) abort();
 }
 
 int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t type) {
@@ -320,7 +326,7 @@ int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t type) {
   op->input.mkobj_in.name = (const char *) op->name;
   op->input.mkobj_in.type = (hg_bool_t) type;
   rpc_ret = issue_mkobj_rpc(op);
-  assert(rpc_ret == HG_SUCCESS);
+  if (rpc_ret != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
   while(done < 1)
     pthread_cond_wait(&done_cond, &done_mutex);
@@ -339,7 +345,7 @@ size_t BuddyClient::append(const char *name, void *buf, size_t len) {
   hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &hlen,
       HG_BULK_READ_ONLY,
       &(op->input.append_in.bulk_handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   op->action = APPEND;
   hg_ret = issue_append_rpc(op);
   assert(hg_ret == HG_SUCCESS);
@@ -364,7 +370,7 @@ size_t BuddyClient::read(const char *name, void *buf, off_t offset, size_t len) 
       &(op->input.read_in.size),
       HG_BULK_WRITE_ONLY,
       &(op->input.read_in.bulk_handle));
-  assert(hg_ret == HG_SUCCESS);
+  if (hg_ret != HG_SUCCESS) abort();
   op->action = READ;
   hg_ret = issue_read_rpc(op);
   assert(hg_ret == HG_SUCCESS);
@@ -386,7 +392,7 @@ int BuddyClient::get_size(const char *name) {
   hg_return_t ret_rpc;
   op->action = GET_SIZE;
   ret_rpc = issue_get_size_rpc(op);
-  assert(ret_rpc == HG_SUCCESS);
+  if (ret_rpc != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
   while(done < 1)
     pthread_cond_wait(&done_cond, &done_mutex);
@@ -396,14 +402,6 @@ int BuddyClient::get_size(const char *name) {
   free(op);
   return retval;
 }
-#if 0
-/* Avoid compilation warning */
-#ifndef _WIN32
-    #undef _GNU_SOURCE
-#endif
-#include <mercury_config.h>
-
-#endif
 
 } // namespace bb
 } // namespace pdlfs
@@ -431,7 +429,7 @@ void *bbos_init(char *server) {
 void bbos_finalize(void *bbos) {
     class pdlfs::bb::BuddyClient *bc = 
                    reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
-    delete bbos;
+    delete bc;
 }
 
 /*

@@ -25,6 +25,11 @@
 #include <mercury.h>
 #include <mercury_bulk.h>
 #include <mercury_proc_string.h>
+
+/* XXX: Avoid compilation warning - mercury_thread.h redefines _GNU_SOURCE */
+#ifndef _WIN32
+    #undef _GNU_SOURCE
+#endif
 #include <mercury_thread_pool.h>
 
 #include "bbos.h"
@@ -192,15 +197,13 @@ chunk_info_t * BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
 
 size_t BuddyServer::add_data(chunk_info_t *chunk, void *buf, size_t len) {
   // Checking of whether data can fit into this chunk has to be done outside
-  void *ptr = memcpy((void *)((char *)chunk->buf + chunk->size), buf, len);
-  assert(ptr != NULL);
+  memcpy((void *)((char *)chunk->buf + chunk->size), buf, len);
   chunk->size += len;
   return len;
 }
 
 size_t BuddyServer::get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len) {
-  void *ptr = memcpy(buf, (void *)((char *)chunk->buf + offset), len);
-  assert(ptr != NULL);
+  memcpy(buf, (void *)((char *)chunk->buf + offset), len);
   return len;
 }
 
@@ -375,6 +378,7 @@ int BuddyServer::build_object_container_map(const char *container_name) {
     }
     num_objs--;
   }
+  return(0);
 }
 
 bbos_obj_t * BuddyServer::create_bbos_cache_entry(const char *name, mkobj_flag_t type) {
@@ -653,7 +657,7 @@ int BuddyServer::build_container(const char *c_name,
       avg_chunk_response_time *= (num_chunks_written - 1);
       avg_chunk_response_time += ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
       avg_chunk_response_time /= num_chunks_written;
-      assert(data_written == (*it_chunks)->size);
+      if (data_written != (*it_chunks)->size) abort();
       free((*it_chunks)->buf);
 
       //FIXME: Ideally we would reduce dirty size after writing to DW,
@@ -777,7 +781,6 @@ size_t BuddyServer::append(const char *name, void *buf, size_t len) {
   pthread_mutex_lock(&obj->mutex);
   chunk_info_t *last_chunk = obj->lst_chunks->back();
   size_t data_added = 0;
-  size_t data_size_for_chunk = 0;
   chunkid_t next_chunk_id = 0;
   if(obj->lst_chunks->empty() || (last_chunk->size == PFS_CHUNK_SIZE)) {
     // we need to create a new chunk and append into it.
@@ -839,9 +842,9 @@ size_t BuddyServer::read(const char *name, void *buf, off_t offset, size_t len) 
     assert(chunk->buf != NULL);
     FILE *fp_seg = fopen(chunk->c_seg->container_name, "r");
     int seek_ret = fseek(fp_seg, c_offset, SEEK_SET);
-    assert(seek_ret == 0);
+    if (seek_ret != 0) abort();
     size_t read_size = fread(chunk->buf, PFS_CHUNK_SIZE, 1, fp_seg);
-    assert(read_size == 1);
+    if (read_size != 1) abort();
     fclose(fp_seg);
   }
   offset_to_be_read = offset - (PFS_CHUNK_SIZE * chunk_num) + (OBJ_CHUNK_SIZE * chunk_obj_offset);
@@ -968,7 +971,7 @@ static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
   hg_handle_t *handle = (hg_handle_t *) args;
   struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
   int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
+  if (ret != HG_SUCCESS) abort();
   void *outbuf = (void *) calloc(1, in.size);
   assert(outbuf);
   read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
@@ -994,7 +997,7 @@ static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args) {
   hg_handle_t *handle = (hg_handle_t *) args;
   struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
   int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
+  if (ret != HG_SUCCESS) abort();
   hg_size_t input_size = HG_Bulk_get_size(in.bulk_handle);
   append_info->buffer = (void *) calloc(1, input_size);
   assert(append_info->buffer);
@@ -1035,9 +1038,7 @@ static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
   bbos_append_out_t out;
   timespec append_diff_ts;
   BuddyServer *bs = (BuddyServer *) bs_obj;
-  char name[PATH_LEN];
   int ret;
-  size_t len = 0;
   clock_gettime(CLOCK_REALTIME, &append_ts_before);
   out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
   clock_gettime(CLOCK_REALTIME, &append_ts_after);
