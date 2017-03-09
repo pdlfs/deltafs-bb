@@ -10,7 +10,6 @@ set (bbos-srcs bbos.cc bbos_rpc_client.cc bbos_rpc_svc.cc)
 # configure/load in standard modules we plan to use and probe the enviroment
 #
 include (CMakePackageConfigHelpers)
-include (CheckCXXCompilerFlag)
 
 set (CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set (THREADS_PREFER_PTHREAD_FLAG TRUE)
