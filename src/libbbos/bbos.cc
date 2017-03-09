@@ -11,16 +11,15 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/time.h>
-
 
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <string>
 #include <sstream>
+#include <string>
 
 #include <mercury.h>
 #include <mercury_bulk.h>
@@ -28,7 +27,7 @@
 
 /* XXX: Avoid compilation warning - mercury_thread.h redefines _GNU_SOURCE */
 #ifndef _WIN32
-    #undef _GNU_SOURCE
+#undef _GNU_SOURCE
 #endif
 #include <mercury_thread_pool.h>
 
@@ -38,20 +37,20 @@
 namespace pdlfs {
 namespace bb {
 
-#define NUM_SERVER_CONFIGS 11 // keep in sync with configs enum and config_names
+#define NUM_SERVER_CONFIGS \
+  11  // keep in sync with configs enum and config_names
 static char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
-  "BB_Server_port",
-  "BB_Lustre_chunk_size",
-  "BB_Mercury_transfer_size",
-  "BB_Num_workers",
-  "BB_Binpacking_threshold",
-  "BB_Binpacking_policy",
-  "BB_Object_dirty_threshold",
-  "BB_Max_container_size",
-  "BB_Server_IP_address",
-  "BB_Output_dir",
-  "BB_Read_phase"
-};
+    "BB_Server_port",
+    "BB_Lustre_chunk_size",
+    "BB_Mercury_transfer_size",
+    "BB_Num_workers",
+    "BB_Binpacking_threshold",
+    "BB_Binpacking_policy",
+    "BB_Object_dirty_threshold",
+    "BB_Max_container_size",
+    "BB_Server_IP_address",
+    "BB_Output_dir",
+    "BB_Read_phase"};
 
 enum server_configs {
   PORT,
@@ -87,7 +86,7 @@ static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_append_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_read_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_get_size_handler_decorator(hg_handle_t handle);
-static void* binpacking_decorator(void *args);
+static void *binpacking_decorator(void *args);
 static bool BINPACKING_SHUTDOWN;
 static bool GLOBAL_RPC_SHUTDOWN;
 static double avg_chunk_response_time = 0.0;
@@ -108,27 +107,27 @@ static timespec container_ts_after;
 #ifndef CLOCK_REALTIME
 #define CLOCK_REALTIME 0
 static int clock_gettime(int id, struct timespec *tp) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    tp->tv_sec = tv.tv_sec;
-    tp->tv_nsec = tv.tv_usec * 1000;
-    return(0);
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  tp->tv_sec = tv.tv_sec;
+  tp->tv_nsec = tv.tv_usec * 1000;
+  return (0);
 }
 #endif
 
 static void timespec_diff(struct timespec *start, struct timespec *stop,
-                   struct timespec *result) {
-    if ((stop->tv_nsec - start->tv_nsec) < 0) {
-        result->tv_sec = stop->tv_sec - start->tv_sec - 1;
-        result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
-    } else {
-        result->tv_sec = stop->tv_sec - start->tv_sec;
-        result->tv_nsec = stop->tv_nsec - start->tv_nsec;
-    }
-    return;
+                          struct timespec *result) {
+  if ((stop->tv_nsec - start->tv_nsec) < 0) {
+    result->tv_sec = stop->tv_sec - start->tv_sec - 1;
+    result->tv_nsec = stop->tv_nsec - start->tv_nsec + 1000000000;
+  } else {
+    result->tv_sec = stop->tv_sec - start->tv_sec;
+    result->tv_nsec = stop->tv_nsec - start->tv_nsec;
+  }
+  return;
 }
 
-static void* rpc_progress_fn(void* rpc_index);
+static void *rpc_progress_fn(void *rpc_index);
 
 static void destructor_decorator(int) {
   GLOBAL_RPC_SHUTDOWN = true;
@@ -147,26 +146,27 @@ static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
   num_binpacks += 1;
   timespec_diff(&binpack_ts_before, &binpack_ts_after, &binpack_diff_ts);
   avg_binpack_time *= (num_binpacks - 1);
-  avg_binpack_time += ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
+  avg_binpack_time +=
+      ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
   avg_binpack_time /= num_binpacks;
   bs->unlock_server();
   char path[PATH_LEN];
-  if(lst_binpack_segments.size() > 0) {
+  if (lst_binpack_segments.size() > 0) {
     bs->build_container(bs->get_next_container_name(path, type),
                         lst_binpack_segments);
-    //TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
+    // TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
   }
 }
 
-static void* binpacking_decorator(void *args) {
+static void *binpacking_decorator(void *args) {
   BuddyServer *bs = (BuddyServer *)args;
   printf("\nStarting binpacking thread...\n");
   do {
-    if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
+    if (bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
       invoke_binpacking(bs, COMBINED);
     }
     sleep(1);
-  } while(!BINPACKING_SHUTDOWN);
+  } while (!BINPACKING_SHUTDOWN);
   /* pack whatever is remaining */
   invoke_binpacking(bs, COMBINED);
   while (bs->get_individual_obj_count() > 0) {
@@ -177,18 +177,18 @@ static void* binpacking_decorator(void *args) {
   pthread_exit(NULL);
 }
 /*
- * start of class functions 
+ * start of class functions
  */
 
-chunk_info_t * BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
+chunk_info_t *BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
   chunk_info_t *new_chunk = new chunk_info_t;
   new_chunk->id = id;
-  if(malloc_chunk == 1) {
-    new_chunk->buf = (void *) malloc(sizeof(char) * PFS_CHUNK_SIZE);
+  if (malloc_chunk == 1) {
+    new_chunk->buf = (void *)malloc(sizeof(char) * PFS_CHUNK_SIZE);
   } else {
     new_chunk->buf = NULL;
   }
-  if(new_chunk == NULL) {
+  if (new_chunk == NULL) {
     return NULL;
   }
   new_chunk->size = 0;
@@ -202,27 +202,29 @@ size_t BuddyServer::add_data(chunk_info_t *chunk, void *buf, size_t len) {
   return len;
 }
 
-size_t BuddyServer::get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len) {
+size_t BuddyServer::get_data(chunk_info_t *chunk, void *buf, off_t offset,
+                             size_t len) {
   memcpy(buf, (void *)((char *)chunk->buf + offset), len);
   return len;
 }
 
 std::list<binpack_segment_t> BuddyServer::all_binpacking_policy() {
   std::list<binpack_segment_t> segments;
-  //FIXME: hardcoded to all objects
+  // FIXME: hardcoded to all objects
   std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
-  while(it_map != object_map->end()) {
+  while (it_map != object_map->end()) {
     binpack_segment_t seg;
     seg.obj = (*it_map).second;
     pthread_mutex_lock(&seg.obj->mutex);
-    if(seg.obj->type == READ_OPTIMIZED) {
+    if (seg.obj->type == READ_OPTIMIZED) {
       it_map++;
       continue;
     }
     seg.start_chunk = seg.obj->cursor;
     seg.end_chunk = seg.obj->lst_chunks->size();
     size_t last_chunk_size = seg.obj->lst_chunks->back()->size;
-    seg.obj->dirty_size -= ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE;
+    seg.obj->dirty_size -=
+        ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE;
     seg.obj->dirty_size -= last_chunk_size;
     pthread_mutex_unlock(&seg.obj->mutex);
     dirty_bbos_size -= ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE;
@@ -237,7 +239,7 @@ std::list<binpack_segment_t> BuddyServer::rr_with_cursor_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   chunkid_t num_chunks = CONTAINER_SIZE / PFS_CHUNK_SIZE;
   std::list<bbos_obj_t *> packed_objects_list;
-  while(num_chunks > 0 && lru_objects->size() > 0) {
+  while (num_chunks > 0 && lru_objects->size() > 0) {
     bbos_obj_t *obj = lru_objects->front();
     lru_objects->pop_front();
     binpack_segment_t seg;
@@ -245,7 +247,7 @@ std::list<binpack_segment_t> BuddyServer::rr_with_cursor_binpacking_policy() {
     seg.obj = obj;
     seg.start_chunk = obj->cursor;
     seg.end_chunk = seg.start_chunk;
-    if((obj->last_full_chunk - seg.start_chunk) > num_chunks) {
+    if ((obj->last_full_chunk - seg.start_chunk) > num_chunks) {
       seg.end_chunk += num_chunks;
       obj->cursor += num_chunks;
     } else {
@@ -254,7 +256,7 @@ std::list<binpack_segment_t> BuddyServer::rr_with_cursor_binpacking_policy() {
     }
     obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
     dirty_bbos_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
-    if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
+    if (obj->dirty_size > OBJECT_DIRTY_THRESHOLD) {
       packed_objects_list.push_back(obj);
     } else {
       obj->marked_for_packing = false;
@@ -276,17 +278,20 @@ std::list<binpack_segment_t> BuddyServer::get_all_segments() {
   bbos_obj_t *obj = individual_objects->front();
   individual_objects->pop_front();
   chunkid_t num_chunks = obj->dirty_size / PFS_CHUNK_SIZE;
-  while(num_chunks > 0) {
+  while (num_chunks > 0) {
     binpack_segment_t seg;
     seg.obj = obj;
     seg.start_chunk = obj->cursor;
     seg.end_chunk = obj->lst_chunks->size();
     obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
     switch (obj->type) {
-      case WRITE_OPTIMIZED: dirty_bbos_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
-                            break;
-      case READ_OPTIMIZED: dirty_individual_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
-                           break;
+      case WRITE_OPTIMIZED:
+        dirty_bbos_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
+        break;
+      case READ_OPTIMIZED:
+        dirty_individual_size -=
+            (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE;
+        break;
     }
     segments.push_back(seg);
     num_chunks -= (seg.end_chunk - seg.start_chunk);
@@ -303,13 +308,19 @@ void BuddyServer::build_global_manifest(const char *manifest_name) {
   // a separate file.
   FILE *fp = fopen(manifest_name, "w+");
   std::map<std::string, uint32_t> container_map;
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->begin();
-  while(it_map != object_container_map->end()) {
-    std::list<container_segment_t *>::iterator it_list = it_map->second->begin();
-    while(it_list != it_map->second->end()) {
-      std::map<std::string, uint32_t>::iterator it_c_map = container_map.find(std::string((*it_list)->container_name));
-      if(it_c_map == container_map.end()) {
-        container_map.insert(it_c_map, std::pair<std::string, uint32_t>(std::string((*it_list)->container_name), container_map.size()));
+  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+      object_container_map->begin();
+  while (it_map != object_container_map->end()) {
+    std::list<container_segment_t *>::iterator it_list =
+        it_map->second->begin();
+    while (it_list != it_map->second->end()) {
+      std::map<std::string, uint32_t>::iterator it_c_map =
+          container_map.find(std::string((*it_list)->container_name));
+      if (it_c_map == container_map.end()) {
+        container_map.insert(
+            it_c_map,
+            std::pair<std::string, uint32_t>(
+                std::string((*it_list)->container_name), container_map.size()));
         fprintf(fp, "%s\n", (*it_list)->container_name);
       }
       it_list++;
@@ -319,23 +330,23 @@ void BuddyServer::build_global_manifest(const char *manifest_name) {
   fclose(fp);
 }
 
-    /*
-     * Build the object container mapping from the start of container files.
-     */
+/*
+ * Build the object container mapping from the start of container files.
+ */
 int BuddyServer::build_object_container_map(const char *container_name) {
   std::ifstream container(container_name);
-  if(!container) {
+  if (!container) {
     return -BB_ENOCONTAINER;
   }
   std::string line;
   std::string token;
   std::string bbos_name;
 
-  container >> containers_built; // first line contains number of objects.
+  container >> containers_built;  // first line contains number of objects.
   int num_objs = containers_built;
-  std::getline(container, line); // this is the empty line
+  std::getline(container, line);  // this is the empty line
 
-  while(num_objs > 0) {
+  while (num_objs > 0) {
     std::getline(container, line);
     int i = 0;
     char *end;
@@ -345,25 +356,30 @@ int BuddyServer::build_object_container_map(const char *container_name) {
     std::string delimiter(":");
     while ((pos = line.find(delimiter)) != std::string::npos) {
       token = line.substr(0, pos);
-      switch(i) {
-        case 0: bbos_name = token;
-                break;
-        case 1: c_seg->start_chunk = strtoul(token.c_str(), &end, 10);
-                break;
-        case 2: c_seg->end_chunk = strtoul(token.c_str(), &end, 10);
-                break;
+      switch (i) {
+        case 0:
+          bbos_name = token;
+          break;
+        case 1:
+          c_seg->start_chunk = strtoul(token.c_str(), &end, 10);
+          break;
+        case 2:
+          c_seg->end_chunk = strtoul(token.c_str(), &end, 10);
+          break;
       };
       line.erase(0, pos + delimiter.length());
       i++;
     }
     c_seg->offset = strtoul(line.c_str(), &end, 10);
-    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(bbos_name);
-    if(it_map != object_container_map->end()) {
+    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+        object_container_map->find(bbos_name);
+    if (it_map != object_container_map->end()) {
       // entry exists. place segment in right position.
       std::list<container_segment_t *> *lst_segments = it_map->second;
-      std::list<container_segment_t *>::iterator it_list = lst_segments->begin();
-      while(it_list != lst_segments->end()) {
-        if((*it_list)->start_chunk < c_seg->start_chunk) {
+      std::list<container_segment_t *>::iterator it_list =
+          lst_segments->begin();
+      while (it_list != lst_segments->end()) {
+        if ((*it_list)->start_chunk < c_seg->start_chunk) {
           it_list++;
         } else {
           break;
@@ -372,16 +388,20 @@ int BuddyServer::build_object_container_map(const char *container_name) {
       }
       lst_segments->insert(it_list, c_seg);
     } else {
-      std::list<container_segment_t *> *lst_segments = new std::list<container_segment_t *>;
+      std::list<container_segment_t *> *lst_segments =
+          new std::list<container_segment_t *>;
       lst_segments->push_back(c_seg);
-      object_container_map->insert(it_map, std::pair<std::string, std::list<container_segment_t *> *>(bbos_name, lst_segments));
+      object_container_map->insert(
+          it_map, std::pair<std::string, std::list<container_segment_t *> *>(
+                      bbos_name, lst_segments));
     }
     num_objs--;
   }
-  return(0);
+  return (0);
 }
 
-bbos_obj_t * BuddyServer::create_bbos_cache_entry(const char *name, mkobj_flag_t type) {
+bbos_obj_t *BuddyServer::create_bbos_cache_entry(const char *name,
+                                                 mkobj_flag_t type) {
   bbos_obj_t *obj = new bbos_obj_t;
   obj->lst_chunks = new std::list<chunk_info_t *>;
   obj->last_chunk_flushed = 0;
@@ -394,17 +414,20 @@ bbos_obj_t * BuddyServer::create_bbos_cache_entry(const char *name, mkobj_flag_t
   pthread_mutex_init(&obj->mutex, NULL);
   pthread_mutex_lock(&obj->mutex);
   sprintf(obj->name, "%s", name);
-  std::map<std::string, bbos_obj_t*>::iterator it_map = object_map->begin();
-  object_map->insert(it_map, std::pair<std::string, bbos_obj_t*>(std::string(obj->name), obj));
-  if(type == READ_OPTIMIZED) {
+  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
+  object_map->insert(it_map, std::pair<std::string, bbos_obj_t *>(
+                                 std::string(obj->name), obj));
+  if (type == READ_OPTIMIZED) {
     individual_objects->push_back(obj);
   }
   return obj;
 }
 
-bbos_obj_t *BuddyServer::populate_object_metadata(const char *name, mkobj_flag_t type) {
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(name);
-  if(it_map == object_container_map->end()) {
+bbos_obj_t *BuddyServer::populate_object_metadata(const char *name,
+                                                  mkobj_flag_t type) {
+  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+      object_container_map->find(name);
+  if (it_map == object_container_map->end()) {
     // return -BB_ENOOBJ;
     return NULL;
   }
@@ -413,8 +436,8 @@ bbos_obj_t *BuddyServer::populate_object_metadata(const char *name, mkobj_flag_t
   std::list<container_segment_t *>::iterator it_list = lst_segments->begin();
   bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED);
   chunkid_t i = 0;
-  while(it_list != lst_segments->end()) {
-    for(i=(*it_list)->start_chunk; i<(*it_list)->end_chunk;i++) {
+  while (it_list != lst_segments->end()) {
+    for (i = (*it_list)->start_chunk; i < (*it_list)->end_chunk; i++) {
       chunk_info_t *chunk = make_chunk(i, 0);
       obj->lst_chunks->push_back(chunk);
       chunk->c_seg = (*it_list);
@@ -428,13 +451,13 @@ bbos_obj_t *BuddyServer::populate_object_metadata(const char *name, mkobj_flag_t
 BuddyServer::BuddyServer() {
   /* Default configs */
   port = 19900;
-  PFS_CHUNK_SIZE = 8388608; // 8 MB
-  OBJ_CHUNK_SIZE = 2097152; // 2 MB
-  num_worker_threads = 32; // number of worker threads
-  binpacking_threshold = 21474836480; // 20 GB before triggering binpacking
+  PFS_CHUNK_SIZE = 8388608;            // 8 MB
+  OBJ_CHUNK_SIZE = 2097152;            // 2 MB
+  num_worker_threads = 32;             // number of worker threads
+  binpacking_threshold = 21474836480;  // 20 GB before triggering binpacking
   binpacking_policy = RR_WITH_CURSOR;
-  OBJECT_DIRTY_THRESHOLD = 268435456; // 256 MB
-  CONTAINER_SIZE = 10737418240; // 10 GB
+  OBJECT_DIRTY_THRESHOLD = 268435456;  // 256 MB
+  CONTAINER_SIZE = 10737418240;        // 10 GB
   // char rpc_protocol[PATH_LEN] = "cci"; // CCI protocol to be used by default
   snprintf(output_dir, PATH_LEN, "/tmp");
   char server_ip[PATH_LEN];
@@ -444,30 +467,41 @@ BuddyServer::BuddyServer() {
   int config_overrides = 0;
   while (config_overrides < NUM_SERVER_CONFIGS) {
     const char *v = getenv(config_names[config_overrides]);
-    if(v != NULL) {
+    if (v != NULL) {
       switch (config_overrides) {
-        case 0: port = atoi(v);
-                break;
-        case 1: PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
-                break;
-        case 2: OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
-                break;
-        case 3: num_worker_threads = atoi(v);
-                break;
-        case 4: binpacking_threshold = strtoul(v, NULL, 0);
-                break;
-        case 5: binpacking_policy = (binpacking_policy_t) atoi(v);
-                break;
-        case 6: OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
-                break;
-        case 7: CONTAINER_SIZE = strtoul(v, NULL, 0);
-                break;
-        case 8: snprintf(server_ip, PATH_LEN, "%s", v);
-                break;
-        case 9: snprintf(output_dir, PATH_LEN, "%s", v);
-                break;
-        case 10: read_phase = atoi(v);
-                 break;
+        case 0:
+          port = atoi(v);
+          break;
+        case 1:
+          PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
+          break;
+        case 2:
+          OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
+          break;
+        case 3:
+          num_worker_threads = atoi(v);
+          break;
+        case 4:
+          binpacking_threshold = strtoul(v, NULL, 0);
+          break;
+        case 5:
+          binpacking_policy = (binpacking_policy_t)atoi(v);
+          break;
+        case 6:
+          OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
+          break;
+        case 7:
+          CONTAINER_SIZE = strtoul(v, NULL, 0);
+          break;
+        case 8:
+          snprintf(server_ip, PATH_LEN, "%s", v);
+          break;
+        case 9:
+          snprintf(output_dir, PATH_LEN, "%s", v);
+          break;
+        case 10:
+          read_phase = atoi(v);
+          break;
       }
     }
     config_overrides++;
@@ -483,15 +517,16 @@ BuddyServer::BuddyServer() {
   assert(server_network_class);
 
   /* signal handling to capture ctrl + c */
-  memset( &sa, 0, sizeof(sa) );
+  memset(&sa, 0, sizeof(sa));
   sa.sa_handler = destructor_decorator;
   sigfillset(&sa.sa_mask);
   sigaction(SIGINT, &sa, NULL);
 
   object_map = new std::map<std::string, bbos_obj_t *>;
-  object_container_map = new std::map<std::string, std::list<container_segment_t *> *>;
+  object_container_map =
+      new std::map<std::string, std::list<container_segment_t *> *>;
   dirty_bbos_size = 0;
-  bs_obj = (void *) this;
+  bs_obj = (void *)this;
   lru_objects = new std::list<bbos_obj_t *>;
   individual_objects = new std::list<bbos_obj_t *>;
 
@@ -505,19 +540,27 @@ BuddyServer::BuddyServer() {
 
   server_hg_progress_shutdown_flag = false;
   pthread_create(&progress_thread, NULL, rpc_progress_fn, NULL);
-  server_mkobj_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_mkobj_handler_decorator);
-  server_append_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_append_rpc", bbos_append_in_t, bbos_append_out_t, bbos_append_handler_decorator);
-  server_read_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t, bbos_read_out_t, bbos_read_handler_decorator);
-  server_get_size_rpc_id = MERCURY_REGISTER(server_hg_class, "bbos_get_size_rpc", bbos_get_size_in_t, bbos_get_size_out_t, bbos_get_size_handler_decorator);
+  server_mkobj_rpc_id =
+      MERCURY_REGISTER(server_hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t,
+                       bbos_mkobj_out_t, bbos_mkobj_handler_decorator);
+  server_append_rpc_id =
+      MERCURY_REGISTER(server_hg_class, "bbos_append_rpc", bbos_append_in_t,
+                       bbos_append_out_t, bbos_append_handler_decorator);
+  server_read_rpc_id =
+      MERCURY_REGISTER(server_hg_class, "bbos_read_rpc", bbos_read_in_t,
+                       bbos_read_out_t, bbos_read_handler_decorator);
+  server_get_size_rpc_id =
+      MERCURY_REGISTER(server_hg_class, "bbos_get_size_rpc", bbos_get_size_in_t,
+                       bbos_get_size_out_t, bbos_get_size_handler_decorator);
 
   containers_built = 0;
-  if(read_phase == 0) {
+  if (read_phase == 0) {
     BINPACKING_SHUTDOWN = false;
     pthread_create(&binpacking_thread, NULL, binpacking_decorator, this);
   } else {
     /* build the object container map using the MANIFEST */
     std::ifstream containers(output_manifest);
-    if(!containers) {
+    if (!containers) {
       printf("Could not read manifest file!\n");
       assert(0);
     }
@@ -535,34 +578,44 @@ BuddyServer::BuddyServer() {
 }
 
 BuddyServer::~BuddyServer() {
-  while(!GLOBAL_RPC_SHUTDOWN) {
+  while (!GLOBAL_RPC_SHUTDOWN) {
     sleep(1);
   }
   pthread_join(progress_thread, NULL);
-  HG_Context_destroy(server_hg_context);   /* XXX return value */
-  HG_Finalize(server_hg_class);            /* XXX return value */ 
+  HG_Context_destroy(server_hg_context); /* XXX return value */
+  HG_Finalize(server_hg_class);          /* XXX return value */
   hg_thread_pool_destroy(thread_pool);
   pthread_join(binpacking_thread, NULL);
   assert(!BINPACKING_SHUTDOWN);
   assert(dirty_bbos_size == 0);
   assert(dirty_individual_size == 0);
-  if(read_phase == 0) {
-    build_global_manifest(output_manifest); // important for booting next time and reading
+  if (read_phase == 0) {
+    build_global_manifest(
+        output_manifest);  // important for booting next time and reading
   }
-  printf("============= BBOS MEASUREMENTS of %s (OBJ_CHUNK_SIZE = %lu, PFS_CHUNK_SIZE = %lu) =============\n", server_url, OBJ_CHUNK_SIZE, PFS_CHUNK_SIZE);
+  printf(
+      "============= BBOS MEASUREMENTS of %s (OBJ_CHUNK_SIZE = %lu, "
+      "PFS_CHUNK_SIZE = %lu) =============\n",
+      server_url, OBJ_CHUNK_SIZE, PFS_CHUNK_SIZE);
   printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time);
-  printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n", avg_container_response_time);
+  printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
+         avg_container_response_time);
   printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency);
-  printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n", avg_binpack_time);
-  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %lu\n", PFS_CHUNK_SIZE, num_chunks_written);
-  printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %lu\n", CONTAINER_SIZE, num_containers_written);
+  printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n",
+         avg_binpack_time);
+  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %lu\n", PFS_CHUNK_SIZE,
+         num_chunks_written);
+  printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %lu\n", CONTAINER_SIZE,
+         num_containers_written);
   printf("NUMBER OF %lu BYTE APPENDS = %lu\n", OBJ_CHUNK_SIZE, num_appends);
   printf("NUMBER OF BINPACKINGS DONE = %lu\n", num_binpacks);
   printf("============================================\n");
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_obj_cont_map = object_container_map->begin();
-  while(it_obj_cont_map != object_container_map->end()) {
-    std::list<container_segment_t *>::iterator it_c_segs = it_obj_cont_map->second->begin();
-    while(it_c_segs != it_obj_cont_map->second->end()) {
+  std::map<std::string, std::list<container_segment_t *> *>::iterator
+      it_obj_cont_map = object_container_map->begin();
+  while (it_obj_cont_map != object_container_map->end()) {
+    std::list<container_segment_t *>::iterator it_c_segs =
+        it_obj_cont_map->second->begin();
+    while (it_c_segs != it_obj_cont_map->second->end()) {
       delete (*it_c_segs);
       it_c_segs++;
     }
@@ -570,11 +623,13 @@ BuddyServer::~BuddyServer() {
     it_obj_cont_map++;
   }
   delete object_container_map;
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->begin();
-  while(it_obj_map != object_map->end()) {
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map->begin();
+  while (it_obj_map != object_map->end()) {
     assert(it_obj_map->second->dirty_size == 0);
-    std::list<chunk_info_t *>::iterator it_chunks = it_obj_map->second->lst_chunks->begin();
-    while(it_chunks != it_obj_map->second->lst_chunks->end()) {
+    std::list<chunk_info_t *>::iterator it_chunks =
+        it_obj_map->second->lst_chunks->begin();
+    while (it_chunks != it_obj_map->second->lst_chunks->end()) {
       delete (*it_chunks);
       it_chunks++;
     }
@@ -590,24 +645,28 @@ BuddyServer::~BuddyServer() {
 
 std::list<binpack_segment_t> BuddyServer::get_objects(container_flag_t type) {
   switch (type) {
-    case COMBINED: if((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
-                     return all_binpacking_policy();
-                   }
-                   switch (binpacking_policy) {
-                     case RR_WITH_CURSOR: return rr_with_cursor_binpacking_policy();
-                     case ALL: return all_binpacking_policy();
-                   }
-                   break;
+    case COMBINED:
+      if ((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
+        return all_binpacking_policy();
+      }
+      switch (binpacking_policy) {
+        case RR_WITH_CURSOR:
+          return rr_with_cursor_binpacking_policy();
+        case ALL:
+          return all_binpacking_policy();
+      }
+      break;
 
-    case INDIVIDUAL: return get_all_segments();
+    case INDIVIDUAL:
+      return get_all_segments();
   }
   std::list<binpack_segment_t> segments;
   printf("Invalid binpacking policy selected!\n");
   return segments;
 }
 
-int BuddyServer::build_container(const char *c_name,
-    std::list<binpack_segment_t> lst_binpack_segments) {
+int BuddyServer::build_container(
+    const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
   char c_path[PATH_LEN];
   snprintf(c_path, PATH_LEN, "%s/%s", output_dir, c_name);
   binpack_segment_t b_obj;
@@ -619,48 +678,57 @@ int BuddyServer::build_container(const char *c_name,
   clock_gettime(CLOCK_REALTIME, &container_ts_before);
   FILE *fp = fopen(c_path, "w+");
   assert(fp != NULL);
-  std::list<binpack_segment_t>::iterator it_bpack = lst_binpack_segments.begin();
+  std::list<binpack_segment_t>::iterator it_bpack =
+      lst_binpack_segments.begin();
   start_offset += fprintf(fp, "%lu\n", lst_binpack_segments.size());
-  while(it_bpack != lst_binpack_segments.end()) {
+  while (it_bpack != lst_binpack_segments.end()) {
     b_obj = *it_bpack;
     it_bpack++;
-    start_offset += fprintf(fp, "%s:%u:%u:00000000\n", b_obj.obj->name, b_obj.start_chunk, b_obj.end_chunk);
+    start_offset += fprintf(fp, "%s:%u:%u:00000000\n", b_obj.obj->name,
+                            b_obj.start_chunk, b_obj.end_chunk);
   }
   c_offset = start_offset;
-  rewind(fp); // we need to rewind the fp to the start because now we know correct offsets
+  rewind(fp);  // we need to rewind the fp to the start because now we know
+               // correct offsets
   fprintf(fp, "%lu\n", lst_binpack_segments.size());
   it_bpack = lst_binpack_segments.begin();
   // rewrite of metadata is required with the correct start offsets of data.
-  while(it_bpack != lst_binpack_segments.end()) {
+  while (it_bpack != lst_binpack_segments.end()) {
     b_obj = *it_bpack;
     it_bpack++;
     std::stringstream c_offset_stream;
     c_offset_stream << std::setfill('0') << std::setw(16) << start_offset;
-    fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name, b_obj.start_chunk, b_obj.end_chunk, c_offset_stream.str().c_str());
+    fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name, b_obj.start_chunk,
+            b_obj.end_chunk, c_offset_stream.str().c_str());
     start_offset += (PFS_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
   }
 
   it_bpack = lst_binpack_segments.begin();
-  while(it_bpack != lst_binpack_segments.end()) {
+  while (it_bpack != lst_binpack_segments.end()) {
     b_obj = *it_bpack;
-    std::list<chunk_info_t *>::iterator it_chunks = b_obj.obj->lst_chunks->begin();
-    while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.start_chunk) {
+    std::list<chunk_info_t *>::iterator it_chunks =
+        b_obj.obj->lst_chunks->begin();
+    while (it_chunks != b_obj.obj->lst_chunks->end() &&
+           (*it_chunks)->id < b_obj.start_chunk) {
       it_chunks++;
     }
-    while(it_chunks != b_obj.obj->lst_chunks->end() && (*it_chunks)->id < b_obj.end_chunk) {
-      //FIXME: write to DW in PFS_CHUNK_SIZE - https://github.com/hpc/libhio
+    while (it_chunks != b_obj.obj->lst_chunks->end() &&
+           (*it_chunks)->id < b_obj.end_chunk) {
+      // FIXME: write to DW in PFS_CHUNK_SIZE - https://github.com/hpc/libhio
       clock_gettime(CLOCK_REALTIME, &chunk_ts_before);
-      data_written = fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
+      data_written =
+          fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
       clock_gettime(CLOCK_REALTIME, &chunk_ts_after);
       num_chunks_written += 1;
       timespec_diff(&chunk_ts_before, &chunk_ts_after, &chunk_diff_ts);
       avg_chunk_response_time *= (num_chunks_written - 1);
-      avg_chunk_response_time += ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
+      avg_chunk_response_time +=
+          ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
       avg_chunk_response_time /= num_chunks_written;
       if (data_written != (*it_chunks)->size) abort();
       free((*it_chunks)->buf);
 
-      //FIXME: Ideally we would reduce dirty size after writing to DW,
+      // FIXME: Ideally we would reduce dirty size after writing to DW,
       //       but here we reduce it when we choose to binpack itself.
       it_chunks++;
     }
@@ -672,15 +740,19 @@ int BuddyServer::build_container(const char *c_name,
     c_seg->end_chunk = b_obj.end_chunk * (PFS_CHUNK_SIZE / OBJ_CHUNK_SIZE);
     c_seg->offset = c_offset;
     c_offset += (OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
-    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(b_obj.obj->name));
-    if(it_map != object_container_map->end()) {
+    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+        object_container_map->find(std::string(b_obj.obj->name));
+    if (it_map != object_container_map->end()) {
       // entry already present in global manifest. Just add new segments.
       it_map->second->push_back(c_seg);
     } else {
       std::string bbos_name(b_obj.obj->name);
-      std::list<container_segment_t *> *lst_segments = new std::list<container_segment_t *>;
+      std::list<container_segment_t *> *lst_segments =
+          new std::list<container_segment_t *>;
       lst_segments->push_back(c_seg);
-      object_container_map->insert(it_map, std::pair<std::string, std::list<container_segment_t *> *>(bbos_name, lst_segments));
+      object_container_map->insert(
+          it_map, std::pair<std::string, std::list<container_segment_t *> *>(
+                      bbos_name, lst_segments));
     }
     it_bpack++;
   }
@@ -689,33 +761,29 @@ int BuddyServer::build_container(const char *c_name,
   num_containers_written += 1;
   timespec_diff(&container_ts_before, &container_ts_after, &container_diff_ts);
   avg_container_response_time *= (num_containers_written - 1);
-  avg_container_response_time += ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
+  avg_container_response_time +=
+      ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
   avg_container_response_time /= num_containers_written;
   return 0;
 }
 
 int BuddyServer::mkobj(const char *name, mkobj_flag_t type) {
   // Initialize an in-memory object
-  if(create_bbos_cache_entry(name, type) == NULL) {
+  if (create_bbos_cache_entry(name, type) == NULL) {
     return -BB_ERROBJ;
   }
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->find(std::string(name));
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map->find(std::string(name));
   pthread_mutex_unlock(&(it_obj_map->second->mutex));
   return 0;
 }
 
-int BuddyServer::lock_server() {
-  return pthread_mutex_lock(&bbos_mutex);
-}
+int BuddyServer::lock_server() { return pthread_mutex_lock(&bbos_mutex); }
 
-int BuddyServer::unlock_server() {
-  return pthread_mutex_unlock(&bbos_mutex);
-}
+int BuddyServer::unlock_server() { return pthread_mutex_unlock(&bbos_mutex); }
 
 /* Get total dirty data size */
-size_t BuddyServer::get_dirty_size() {
-  return dirty_bbos_size;
-}
+size_t BuddyServer::get_dirty_size() { return dirty_bbos_size; }
 
 /* Get number of individual objects. */
 uint32_t BuddyServer::get_individual_obj_count() {
@@ -723,39 +791,41 @@ uint32_t BuddyServer::get_individual_obj_count() {
 }
 
 /* Get binpacking threshold */
-size_t BuddyServer::get_binpacking_threshold() {
-  return binpacking_threshold;
-}
+size_t BuddyServer::get_binpacking_threshold() { return binpacking_threshold; }
 
 /* Get binpacking policy */
-size_t BuddyServer::get_binpacking_policy() {
-  return binpacking_policy;
-}
+size_t BuddyServer::get_binpacking_policy() { return binpacking_policy; }
 
 /* Get name of next container */
-const char * BuddyServer::get_next_container_name(char *path, container_flag_t type) {
-  //TODO: get container name from a microservice
+const char *BuddyServer::get_next_container_name(char *path,
+                                                 container_flag_t type) {
+  // TODO: get container name from a microservice
   switch (type) {
-    case COMBINED: snprintf(path, PATH_LEN, "bbos_%d.con.write", containers_built++);
-                   break;
-    case INDIVIDUAL: snprintf(path, PATH_LEN, "bbos_%d.con.read", containers_built++);
-                     break;
+    case COMBINED:
+      snprintf(path, PATH_LEN, "bbos_%d.con.write", containers_built++);
+      break;
+    case INDIVIDUAL:
+      snprintf(path, PATH_LEN, "bbos_%d.con.read", containers_built++);
+      break;
   }
   return (const char *)path;
 }
 
 /* Get size of BB object */
 size_t BuddyServer::get_size(const char *name) {
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map = object_map->find(std::string(name));
-  if(it_obj_map == object_map->end()) {
-    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(std::string(name));
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map->find(std::string(name));
+  if (it_obj_map == object_map->end()) {
+    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+        object_container_map->find(std::string(name));
     assert(it_map != object_container_map->end());
-    bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED); //FIXME: place correct object type
+    bbos_obj_t *obj = create_bbos_cache_entry(
+        name, WRITE_OPTIMIZED);  // FIXME: place correct object type
     std::list<container_segment_t *> *lst_segments = it_map->second;
     std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
-    while(it_segs != it_map->second->end()) {
+    while (it_segs != it_map->second->end()) {
       container_segment_t *c_seg = (*it_segs);
-      for(int i=c_seg->start_chunk; i<c_seg->end_chunk; i++) {
+      for (int i = c_seg->start_chunk; i < c_seg->end_chunk; i++) {
         chunk_info_t *chunk = new chunk_info_t;
         chunk->buf = NULL;
         chunk->size = 0;
@@ -782,9 +852,9 @@ size_t BuddyServer::append(const char *name, void *buf, size_t len) {
   chunk_info_t *last_chunk = obj->lst_chunks->back();
   size_t data_added = 0;
   chunkid_t next_chunk_id = 0;
-  if(obj->lst_chunks->empty() || (last_chunk->size == PFS_CHUNK_SIZE)) {
+  if (obj->lst_chunks->empty() || (last_chunk->size == PFS_CHUNK_SIZE)) {
     // we need to create a new chunk and append into it.
-    if(!obj->lst_chunks->empty()) {
+    if (!obj->lst_chunks->empty()) {
       next_chunk_id = last_chunk->id + 1;
       obj->last_full_chunk = last_chunk->id;
     }
@@ -793,35 +863,39 @@ size_t BuddyServer::append(const char *name, void *buf, size_t len) {
     last_chunk = obj->lst_chunks->back();
   }
   data_added += add_data(last_chunk, buf, OBJ_CHUNK_SIZE);
-  //NOTE: we always assume data will be received in OBJ_CHUNK_SIZE
+  // NOTE: we always assume data will be received in OBJ_CHUNK_SIZE
   obj->size += data_added;
   obj->dirty_size += data_added;
-  if(obj->dirty_size > OBJECT_DIRTY_THRESHOLD && obj->type == WRITE_OPTIMIZED && obj->marked_for_packing == false) {
+  if (obj->dirty_size > OBJECT_DIRTY_THRESHOLD &&
+      obj->type == WRITE_OPTIMIZED && obj->marked_for_packing == false) {
     // add to head of LRU list for binpacking consideration
     obj->marked_for_packing = true;
     lru_objects->push_front(obj);
   }
   switch (obj->type) {
-    case WRITE_OPTIMIZED: dirty_bbos_size += data_added;
-                          break;
-    case READ_OPTIMIZED: dirty_individual_size += data_added;
-                         break;
+    case WRITE_OPTIMIZED:
+      dirty_bbos_size += data_added;
+      break;
+    case READ_OPTIMIZED:
+      dirty_individual_size += data_added;
+      break;
   }
   pthread_mutex_unlock(&obj->mutex);
   return data_added;
 }
 
 /* Read from a BB object */
-size_t BuddyServer::read(const char *name, void *buf, off_t offset, size_t len) {
+size_t BuddyServer::read(const char *name, void *buf, off_t offset,
+                         size_t len) {
   bbos_obj_t *obj = object_map->find(std::string(name))->second;
-  if(obj == NULL && read_phase == 1) {
+  if (obj == NULL && read_phase == 1) {
     obj = populate_object_metadata(name, WRITE_OPTIMIZED);
   } else {
     pthread_mutex_lock(&obj->mutex);
   }
 
   assert(obj != NULL);
-  if(offset >= obj->size) {
+  if (offset >= obj->size) {
     return -BB_INVALID_READ;
   }
   size_t data_read = 0;
@@ -829,16 +903,17 @@ size_t BuddyServer::read(const char *name, void *buf, off_t offset, size_t len) 
   size_t offset_to_be_read = 0;
   std::list<chunk_info_t *>::iterator it_chunks = obj->lst_chunks->begin();
   chunkid_t chunk_num = offset / PFS_CHUNK_SIZE;
-  int chunk_obj_offset = (offset - (chunk_num * PFS_CHUNK_SIZE)) / OBJ_CHUNK_SIZE;
-  for(int i = 0; i < chunk_num; i++) {
+  int chunk_obj_offset =
+      (offset - (chunk_num * PFS_CHUNK_SIZE)) / OBJ_CHUNK_SIZE;
+  for (int i = 0; i < chunk_num; i++) {
     it_chunks++;
   }
   chunk_info_t *chunk = *it_chunks;
-  if(chunk->buf == NULL) {
+  if (chunk->buf == NULL) {
     // first fetch data from container into memory
     off_t c_offset = chunk->c_seg->offset;
     c_offset += (PFS_CHUNK_SIZE * (chunk_num - chunk->c_seg->start_chunk));
-    chunk->buf = (void *) malloc (sizeof(char) * PFS_CHUNK_SIZE);
+    chunk->buf = (void *)malloc(sizeof(char) * PFS_CHUNK_SIZE);
     assert(chunk->buf != NULL);
     FILE *fp_seg = fopen(chunk->c_seg->container_name, "r");
     int seek_ret = fseek(fp_seg, c_offset, SEEK_SET);
@@ -847,20 +922,20 @@ size_t BuddyServer::read(const char *name, void *buf, off_t offset, size_t len) 
     if (read_size != 1) abort();
     fclose(fp_seg);
   }
-  offset_to_be_read = offset - (PFS_CHUNK_SIZE * chunk_num) + (OBJ_CHUNK_SIZE * chunk_obj_offset);
+  offset_to_be_read = offset - (PFS_CHUNK_SIZE * chunk_num) +
+                      (OBJ_CHUNK_SIZE * chunk_obj_offset);
   size_to_be_read = PFS_CHUNK_SIZE;
-  if(len < size_to_be_read) {
+  if (len < size_to_be_read) {
     size_to_be_read = len;
   }
   data_read += get_data(chunk, buf, offset_to_be_read, size_to_be_read);
-  if(read_phase == 1) {
+  if (read_phase == 1) {
     free(chunk->buf);
     chunk->size = 0;
   }
   pthread_mutex_unlock(&obj->mutex);
   return data_read;
 }
-
 
 /***************** end class stuff **************/
 /* more static global */
@@ -871,28 +946,28 @@ static hg_return_t bbos_read_decorator(const struct hg_cb_info *info);
 static hg_return_t bbos_append_decorator(const struct hg_cb_info *info);
 
 /* dedicated thread function to drive Mercury progress */
-static void* rpc_progress_fn(void* rpc_index)
-{
-    hg_return_t ret;
-    unsigned int actual_count;
+static void *rpc_progress_fn(void *rpc_index) {
+  hg_return_t ret;
+  unsigned int actual_count;
 
-    while(!server_hg_progress_shutdown_flag && !GLOBAL_RPC_SHUTDOWN) {
-        do {
-            ret = HG_Trigger(server_hg_context, 0, 1, &actual_count);
-        } while((ret == HG_SUCCESS) && actual_count && !server_hg_progress_shutdown_flag);
+  while (!server_hg_progress_shutdown_flag && !GLOBAL_RPC_SHUTDOWN) {
+    do {
+      ret = HG_Trigger(server_hg_context, 0, 1, &actual_count);
+    } while ((ret == HG_SUCCESS) && actual_count &&
+             !server_hg_progress_shutdown_flag);
 
-        if(!server_hg_progress_shutdown_flag)
-            HG_Progress(server_hg_context, 100);
-    }
+    if (!server_hg_progress_shutdown_flag) HG_Progress(server_hg_context, 100);
+  }
 
-    return(NULL);
+  return (NULL);
 }
 
 /* registered mercury fns "handler_decorator" to thread pool */
 static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle) {
-  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  struct hg_thread_work *work =
+      (struct hg_thread_work *)malloc(sizeof(struct hg_thread_work));
   work->func = bbos_mkobj_handler;
-  work->args = (void *) malloc (sizeof(hg_handle_t));
+  work->args = (void *)malloc(sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
   HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
@@ -900,9 +975,10 @@ static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle) {
 }
 
 static hg_return_t bbos_read_handler_decorator(hg_handle_t handle) {
-  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  struct hg_thread_work *work =
+      (struct hg_thread_work *)malloc(sizeof(struct hg_thread_work));
   work->func = bbos_read_handler;
-  work->args = (void *) malloc (sizeof(hg_handle_t));
+  work->args = (void *)malloc(sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
   HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
@@ -910,9 +986,10 @@ static hg_return_t bbos_read_handler_decorator(hg_handle_t handle) {
 }
 
 static hg_return_t bbos_append_handler_decorator(hg_handle_t handle) {
-  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  struct hg_thread_work *work =
+      (struct hg_thread_work *)malloc(sizeof(struct hg_thread_work));
   work->func = bbos_append_handler;
-  work->args = (void *) malloc (sizeof(hg_handle_t));
+  work->args = (void *)malloc(sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
   HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
@@ -920,15 +997,15 @@ static hg_return_t bbos_append_handler_decorator(hg_handle_t handle) {
 }
 
 static hg_return_t bbos_get_size_handler_decorator(hg_handle_t handle) {
-  struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
+  struct hg_thread_work *work =
+      (struct hg_thread_work *)malloc(sizeof(struct hg_thread_work));
   work->func = bbos_get_size_handler;
-  work->args = (void *) malloc (sizeof(hg_handle_t));
+  work->args = (void *)malloc(sizeof(hg_handle_t));
   memcpy(work->args, &handle, sizeof(handle));
   HG_Destroy(handle);
   hg_thread_pool_post(thread_pool, work);
   return HG_SUCCESS;
 }
-
 
 struct bbos_append_cb {
   void *buffer;
@@ -948,78 +1025,79 @@ struct bbos_read_cb {
   hg_size_t size;
 };
 
-
-
 /* called from thread pool */
 static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
-  hg_handle_t *handle = (hg_handle_t *) args;
+  hg_handle_t *handle = (hg_handle_t *)args;
   bbos_mkobj_out_t out;
   bbos_mkobj_in_t in;
   int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
-  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t) in.type);
+  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t)in.type);
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
   HG_Destroy(*handle);
   free(args);
-  return (hg_thread_ret_t) NULL;
+  return (hg_thread_ret_t)NULL;
 }
 
 static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
   bbos_read_in_t in;
-  hg_handle_t *handle = (hg_handle_t *) args;
-  struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
+  hg_handle_t *handle = (hg_handle_t *)args;
+  struct bbos_read_cb *read_info =
+      (struct bbos_read_cb *)malloc(sizeof(struct bbos_read_cb));
   int ret = HG_Get_input(*handle, &in);
   if (ret != HG_SUCCESS) abort();
-  void *outbuf = (void *) calloc(1, in.size);
+  void *outbuf = (void *)calloc(1, in.size);
   assert(outbuf);
-  read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
+  read_info->size =
+      ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
   read_info->remote_bulk_handle = in.bulk_handle;
   read_info->handle = *handle;
   struct hg_info *hgi = HG_Get_info(*handle);
   assert(hgi);
-  ret = HG_Bulk_create(hgi->hg_class, 1,
-              &(outbuf), &(read_info->size),
-  	          HG_BULK_READ_ONLY, &(read_info->bulk_handle));
+  ret = HG_Bulk_create(hgi->hg_class, 1, &(outbuf), &(read_info->size),
+                       HG_BULK_READ_ONLY, &(read_info->bulk_handle));
   assert(ret == HG_SUCCESS);
   ret = HG_Bulk_transfer(hgi->context, bbos_read_decorator, read_info,
-          HG_BULK_PUSH, hgi->addr, in.bulk_handle, 0, read_info->bulk_handle,
-          0, read_info->size, HG_OP_ID_IGNORE);
+                         HG_BULK_PUSH, hgi->addr, in.bulk_handle, 0,
+                         read_info->bulk_handle, 0, read_info->size,
+                         HG_OP_ID_IGNORE);
   assert(ret == HG_SUCCESS);
   free(outbuf);
   free(args);
-  return (hg_thread_ret_t) NULL;
+  return (hg_thread_ret_t)NULL;
 }
 
 static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args) {
   bbos_append_in_t in;
-  hg_handle_t *handle = (hg_handle_t *) args;
-  struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
+  hg_handle_t *handle = (hg_handle_t *)args;
+  struct bbos_append_cb *append_info =
+      (struct bbos_append_cb *)malloc(sizeof(struct bbos_append_cb));
   int ret = HG_Get_input(*handle, &in);
   if (ret != HG_SUCCESS) abort();
   hg_size_t input_size = HG_Bulk_get_size(in.bulk_handle);
-  append_info->buffer = (void *) calloc(1, input_size);
+  append_info->buffer = (void *)calloc(1, input_size);
   assert(append_info->buffer);
   append_info->handle = *handle;
   struct hg_info *hgi = HG_Get_info(*handle);
   assert(hgi);
   snprintf(append_info->name, PATH_LEN, "%s", in.name);
   append_info->size = input_size;
-  ret = HG_Bulk_create(hgi->hg_class, 1,
-              &(append_info->buffer), &(input_size),
-  	          HG_BULK_WRITE_ONLY, &(append_info->bulk_handle));
+  ret = HG_Bulk_create(hgi->hg_class, 1, &(append_info->buffer), &(input_size),
+                       HG_BULK_WRITE_ONLY, &(append_info->bulk_handle));
   assert(ret == HG_SUCCESS);
-  ret = HG_Bulk_transfer(hgi->context, bbos_append_decorator,
-          append_info, HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
-          append_info->bulk_handle, 0, input_size, HG_OP_ID_IGNORE);
+  ret = HG_Bulk_transfer(hgi->context, bbos_append_decorator, append_info,
+                         HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
+                         append_info->bulk_handle, 0, input_size,
+                         HG_OP_ID_IGNORE);
   assert(ret == HG_SUCCESS);
   free(args);
-  return (hg_thread_ret_t) NULL;
+  return (hg_thread_ret_t)NULL;
 }
 
 static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
-  hg_handle_t *handle = (hg_handle_t *) args;
+  hg_handle_t *handle = (hg_handle_t *)args;
   bbos_get_size_out_t out;
   bbos_get_size_in_t in;
   int ret = HG_Get_input(*handle, &in);
@@ -1030,22 +1108,24 @@ static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
   (void)ret;
   HG_Destroy(*handle);
   free(args);
-  return (hg_thread_ret_t) NULL;
+  return (hg_thread_ret_t)NULL;
 }
 
 static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
-  struct bbos_append_cb *append_info = (struct bbos_append_cb*)info->arg;
+  struct bbos_append_cb *append_info = (struct bbos_append_cb *)info->arg;
   bbos_append_out_t out;
   timespec append_diff_ts;
-  BuddyServer *bs = (BuddyServer *) bs_obj;
+  BuddyServer *bs = (BuddyServer *)bs_obj;
   int ret;
   clock_gettime(CLOCK_REALTIME, &append_ts_before);
-  out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
+  out.size =
+      bs->append(append_info->name, append_info->buffer, append_info->size);
   clock_gettime(CLOCK_REALTIME, &append_ts_after);
   num_appends += 1;
   timespec_diff(&append_ts_before, &append_ts_after, &append_diff_ts);
   avg_append_latency *= (num_appends - 1);
-  avg_append_latency += ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
+  avg_append_latency +=
+      ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
   avg_append_latency /= num_appends;
   ret = HG_Respond(append_info->handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
@@ -1059,7 +1139,7 @@ static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
 
 static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
   bbos_read_out_t out;
-  bbos_read_cb *read_info = (struct bbos_read_cb *) info->arg;
+  bbos_read_cb *read_info = (struct bbos_read_cb *)info->arg;
   out.size = read_info->size;
   int ret = HG_Respond(read_info->handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
@@ -1070,5 +1150,5 @@ static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
   return HG_SUCCESS;
 }
 
-} // namespace bb
-} // namespace pdlfs
+}  // namespace bb
+}  // namespace pdlfs
