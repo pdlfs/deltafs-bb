@@ -1030,9 +1030,12 @@ static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
   hg_handle_t *handle = (hg_handle_t *)args;
   bbos_mkobj_out_t out;
   bbos_mkobj_in_t in;
-  int ret = HG_Get_input(*handle, &in);
+  int ret;
+  mkobj_flag_t flag;
+  ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
-  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t)in.type);
+  flag = (in.readopt) ? READ_OPTIMIZED : WRITE_OPTIMIZED;
+  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, flag);
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;

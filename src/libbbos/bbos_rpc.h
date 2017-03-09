@@ -21,18 +21,26 @@
 namespace pdlfs {
 namespace bb {
 
-MERCURY_GEN_PROC(bbos_mkobj_in_t, ((hg_const_string_t)(name))((hg_bool_t)(
-                                      type))) /* XXX: why is type bool? */
-MERCURY_GEN_PROC(bbos_mkobj_out_t, ((hg_id_t)(status)))
-MERCURY_GEN_PROC(bbos_append_in_t,
-                 ((hg_const_string_t)(name))((hg_bulk_t)(bulk_handle)))
-MERCURY_GEN_PROC(bbos_append_out_t, ((hg_size_t)(size)))
-MERCURY_GEN_PROC(bbos_read_in_t,
-                 ((hg_const_string_t)(name))((hg_size_t)(offset))(
-                     (hg_size_t)(size))((hg_bulk_t)(bulk_handle)))
-MERCURY_GEN_PROC(bbos_read_out_t, ((hg_size_t)(size)))
-MERCURY_GEN_PROC(bbos_get_size_in_t, ((hg_const_string_t)(name)))
-MERCURY_GEN_PROC(bbos_get_size_out_t, ((hg_size_t)(size)))
+/* mkobj */
+MERCURY_GEN_PROC( bbos_mkobj_in_t,     ((hg_const_string_t)(name))
+                                       ((hg_bool_t)(readopt)) )
+MERCURY_GEN_PROC( bbos_mkobj_out_t,    ((hg_int32_t)(status)) )
+
+/* append */
+MERCURY_GEN_PROC( bbos_append_in_t,    ((hg_const_string_t)(name))
+                                       ((hg_bulk_t)(bulk_handle)) )
+MERCURY_GEN_PROC( bbos_append_out_t,   ((hg_int64_t)(size)) )
+
+/* read */
+MERCURY_GEN_PROC( bbos_read_in_t,      ((hg_const_string_t)(name))
+                                       ((hg_int64_t)(offset))
+                                       ((hg_uint64_t)(size))
+                                       ((hg_bulk_t)(bulk_handle)) )
+MERCURY_GEN_PROC( bbos_read_out_t,     ((hg_int64_t)(size)) )
+
+/* get_size */
+MERCURY_GEN_PROC( bbos_get_size_in_t,  ((hg_const_string_t)(name)) )
+MERCURY_GEN_PROC( bbos_get_size_out_t, ((hg_int64_t)(size)) )
 
 }  // namespace bb
 }  // namespace pdlfs

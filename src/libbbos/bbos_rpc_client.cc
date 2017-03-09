@@ -328,7 +328,7 @@ int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t type) {
   hg_return_t rpc_ret;
   op->action = MKOBJ;
   op->input.mkobj_in.name = (const char *)op->name;
-  op->input.mkobj_in.type = (hg_bool_t)type;
+  op->input.mkobj_in.readopt = (type == READ_OPTIMIZED) ? HG_TRUE : HG_FALSE;
   rpc_ret = issue_mkobj_rpc(op);
   if (rpc_ret != HG_SUCCESS) abort();
   pthread_mutex_lock(&done_mutex);
