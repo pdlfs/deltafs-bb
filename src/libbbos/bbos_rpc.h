@@ -21,10 +21,6 @@
 namespace pdlfs {
 namespace bb {
 
-enum ACTION { MKOBJ, APPEND, READ, GET_SIZE }; /* XXX */
-
-#define BB_CONFIG_ERROR 3 /* XXX */
-
 MERCURY_GEN_PROC(bbos_mkobj_in_t, ((hg_const_string_t)(name))((hg_bool_t)(
                                       type))) /* XXX: why is type bool? */
 MERCURY_GEN_PROC(bbos_mkobj_out_t, ((hg_id_t)(status)))

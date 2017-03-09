@@ -37,6 +37,8 @@
 namespace pdlfs {
 namespace bb {
 
+enum ACTION { MKOBJ, APPEND, READ, GET_SIZE }; /* XXX */
+
 /*
  * BuddyClient: main object for client RPC stubs
  */
@@ -409,7 +411,7 @@ extern "C" {
 /*
  * bbos_init: init function
  */
-void *bbos_init(char *server) {
+int bbos_init(char *server, bbos_handle_t *bbosp) {
   class pdlfs::bb::BuddyClient *bc = new pdlfs::bb::BuddyClient;
 
   /* XXX: ctor error possible? */
@@ -418,13 +420,14 @@ void *bbos_init(char *server) {
     fprintf(stderr, "bbos_init: server currently init'd through env XXX\n");
   }
 
-  return (reinterpret_cast<void *>(bc));
+  *bbosp = reinterpret_cast<bbos_handle_t>(bc);
+  return (BB_SUCCESS);
 }
 
 /*
  * bbos_finalize: shutdown the bbos
  */
-void bbos_finalize(void *bbos) {
+void bbos_finalize(bbos_handle_t bbos) {
   class pdlfs::bb::BuddyClient *bc =
       reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
   delete bc;
@@ -433,7 +436,8 @@ void bbos_finalize(void *bbos) {
 /*
  * bbos_mkobj: make a bbos object
  */
-int bbos_mkobj(void *bbos, const char *name, bbos_mkobj_flag_t flag) {
+int bbos_mkobj(bbos_handle_t bbos, const char *name,
+               bbos_mkobj_flag_t flag) {
   class pdlfs::bb::BuddyClient *bc =
       reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
   return (bc->mkobj(name, flag));
@@ -442,7 +446,8 @@ int bbos_mkobj(void *bbos, const char *name, bbos_mkobj_flag_t flag) {
 /*
  * bbos_append: append data to bbos object
  */
-size_t bbos_append(void *bbos, const char *name, void *buf, size_t len) {
+ssize_t bbos_append(bbos_handle_t bbos, const char *name, void *buf,
+                    size_t len) {
   class pdlfs::bb::BuddyClient *bc =
       reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
   return (bc->append(name, buf, len));
@@ -451,8 +456,8 @@ size_t bbos_append(void *bbos, const char *name, void *buf, size_t len) {
 /*
  * bbos_read: read data from bbos object
  */
-size_t bbos_read(void *bbos, const char *name, void *buf, off_t offset,
-                 size_t len) {
+ssize_t bbos_read(bbos_handle_t bbos, const char *name, void *buf,
+                  off_t offset, size_t len) {
   class pdlfs::bb::BuddyClient *bc =
       reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
   return (bc->read(name, buf, offset, len));
@@ -461,7 +466,7 @@ size_t bbos_read(void *bbos, const char *name, void *buf, off_t offset,
 /*
  * bbos_get_size: get current size of a bbos object
  */
-off_t bbos_get_size(void *bbos, const char *name) {
+off_t bbos_get_size(bbos_handle_t bbos, const char *name) {
   class pdlfs::bb::BuddyClient *bc =
       reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
   return (bc->get_size(name));

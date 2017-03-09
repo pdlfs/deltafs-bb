@@ -27,20 +27,24 @@ char genRandom() {
   return alphanum[rand() % stringLength];
 }
 
-void write_data(void *bc, const char *name, char *input, int num_chars) {
+void write_data(bbos_handle_t bc, const char *name, char *input,
+                int num_chars) {
   size_t total_data_written = 0;
   size_t data_written = 0;
   do {
-    data_written = bbos_append(bc, name, (void *)(input + total_data_written), num_chars - total_data_written);
+    data_written = bbos_append(bc, name, (void *)(input + total_data_written),
+                               num_chars - total_data_written);
     total_data_written += data_written;
   } while(total_data_written < num_chars);
 }
 
-void read_data(void *bc, const char *name, char *output, int num_chars) {
+void read_data(bbos_handle_t bc, const char *name, char *output,
+               int num_chars) {
   size_t total_data_read = 0;
   size_t data_read = 0;
   do {
-    data_read = bbos_read(bc, name, (void *)(output + total_data_read), total_data_read, num_chars - total_data_read);
+    data_read = bbos_read(bc, name, (void *)(output + total_data_read),
+                          total_data_read, num_chars - total_data_read);
     total_data_read += data_read;
   } while(total_data_read < num_chars);
 }
@@ -95,7 +99,9 @@ int main(int argc, char **argv) {
     input[i] = genRandom();
   }
   int ret;
-  void *bc = bbos_init(NULL);  /* XXX */
+  bbos_handle_t bc;
+  ret = bbos_init(NULL, &bc);
+  if (ret != BB_SUCCESS) abort();
   ret = bbos_mkobj(bc, obj_name, WRITE_OPTIMIZED);
   if (ret != 0) abort();
   uint64_t num_chunks = (file_size / chunk_size);

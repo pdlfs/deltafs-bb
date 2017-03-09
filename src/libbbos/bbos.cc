@@ -336,7 +336,7 @@ void BuddyServer::build_global_manifest(const char *manifest_name) {
 int BuddyServer::build_object_container_map(const char *container_name) {
   std::ifstream container(container_name);
   if (!container) {
-    return -BB_ENOCONTAINER;
+    return BB_ENOCONTAINER;
   }
   std::string line;
   std::string token;
@@ -428,7 +428,7 @@ bbos_obj_t *BuddyServer::populate_object_metadata(const char *name,
   std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
       object_container_map->find(name);
   if (it_map == object_container_map->end()) {
-    // return -BB_ENOOBJ;
+    // return BB_ENOOBJ;
     return NULL;
   }
   // entry exists. place segment in right position.
@@ -770,7 +770,7 @@ int BuddyServer::build_container(
 int BuddyServer::mkobj(const char *name, mkobj_flag_t type) {
   // Initialize an in-memory object
   if (create_bbos_cache_entry(name, type) == NULL) {
-    return -BB_ERROBJ;
+    return BB_ERROBJ;
   }
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
       object_map->find(std::string(name));
@@ -896,7 +896,7 @@ size_t BuddyServer::read(const char *name, void *buf, off_t offset,
 
   assert(obj != NULL);
   if (offset >= obj->size) {
-    return -BB_INVALID_READ;
+    return BB_INVALID_READ;
   }
   size_t data_read = 0;
   size_t size_to_be_read = 0;
