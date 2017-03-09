@@ -52,4 +52,3 @@ endif ()
 find_package (mercury CONFIG REQUIRED)
 
 add_subdirectory (src)
-#add_subdirectory (tests)

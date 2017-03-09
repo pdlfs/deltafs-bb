@@ -7,28 +7,34 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include <stdint.h>
-#include <stdio.h>
 #include <assert.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
+
+
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <string>
-#include <string.h>
 #include <sstream>
-#include <fstream>
-#include <unistd.h>
-#include <aio.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/time.h>
-#include <iomanip>
-#include "../../include/buddyserver.h"
+
+#include <mercury.h>
+#include <mercury_bulk.h>
+#include <mercury_proc_string.h>
+#include <mercury_thread_pool.h>
+
+#include "bbos.h"
+#include "bbos_rpc.h"
 
 namespace pdlfs {
 namespace bb {
 
 #define NUM_SERVER_CONFIGS 11 // keep in sync with configs enum and config_names
-char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
+static char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
   "BB_Server_port",
   "BB_Lustre_chunk_size",
   "BB_Mercury_transfer_size",
@@ -55,8 +61,19 @@ enum server_configs {
   OUTPUT_DIR
 };
 
-static void* binpacking_decorator(void *args);
-static void destructor_decorator(int);
+/*XXX: static globals */
+static size_t PFS_CHUNK_SIZE;
+static size_t OBJ_CHUNK_SIZE;
+static hg_thread_pool_t *thread_pool;
+static na_class_t *server_network_class;
+static void *bs_obj;
+static hg_class_t *server_hg_class;
+static hg_context_t *server_hg_context;
+static hg_bool_t server_hg_progress_shutdown_flag;
+static hg_id_t server_mkobj_rpc_id;
+static hg_id_t server_append_rpc_id;
+static hg_id_t server_read_rpc_id;
+static hg_id_t server_get_size_rpc_id;
 static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args);
 static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args);
 static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args);
@@ -65,78 +82,34 @@ static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_append_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_read_handler_decorator(hg_handle_t handle);
 static hg_return_t bbos_get_size_handler_decorator(hg_handle_t handle);
-
-static size_t OBJ_CHUNK_SIZE;
-static size_t PFS_CHUNK_SIZE;
+static void* binpacking_decorator(void *args);
 static bool BINPACKING_SHUTDOWN;
 static bool GLOBAL_RPC_SHUTDOWN;
-static na_class_t *server_network_class;
-static hg_context_t *server_hg_context;
-static hg_class_t *server_hg_class;
-static hg_bool_t server_hg_progress_shutdown_flag;
-static hg_id_t server_mkobj_rpc_id;
-static hg_id_t server_append_rpc_id;
-static hg_id_t server_read_rpc_id;
-static hg_id_t server_get_size_rpc_id;
-
-/* metric calculation code */
-static uint64_t chunk_latency_hist[10];
-static timespec chunk_ts_before;
-static timespec chunk_ts_after;
-static timespec container_ts_before;
-static timespec container_ts_after;
-static timespec append_ts_before;
-static timespec append_ts_after;
-static timespec binpack_ts_before;
-static timespec binpack_ts_after;
-static uint64_t num_chunks_written = 0;
-static uint64_t num_containers_written = 0;
-static uint64_t num_appends = 0;
-static uint64_t num_binpacks = 0;
 static double avg_chunk_response_time = 0.0;
 static double avg_container_response_time = 0.0;
 static double avg_append_latency = 0.0;
 static double avg_binpack_time = 0.0;
-static uint64_t num_seeks = 0;
+static uint64_t num_chunks_written = 0;
+static uint64_t num_containers_written = 0;
+static uint64_t num_appends = 0;
+static uint64_t num_binpacks = 0;
+static timespec binpack_ts_before;
+static timespec binpack_ts_after;
+static timespec container_ts_before;
+static timespec chunk_ts_before;
+static timespec chunk_ts_after;
+static timespec container_ts_after;
 
-static hg_thread_pool_t *thread_pool;
-
-static void *bs_obj;
-struct bbos_append_cb {
-  void *buffer;
-  hg_bulk_t bulk_handle;
-  hg_handle_t handle;
-  hg_size_t size;
-  char name[PATH_LEN];
-};
-
-struct bbos_read_cb {
-  void *buffer;
-  hg_bulk_t bulk_handle;
-  hg_bulk_t remote_bulk_handle;
-  hg_handle_t handle;
-  char name[PATH_LEN];
-  off_t offset;
-  size_t size;
-};
-
-/* dedicated thread function to drive Mercury progress */
-static void* rpc_progress_fn(void* rpc_index)
-{
-    hg_return_t ret;
-    unsigned int actual_count;
-
-    while(!server_hg_progress_shutdown_flag && !GLOBAL_RPC_SHUTDOWN) {
-        do {
-            ret = HG_Trigger(server_hg_context, 0, 1, &actual_count);
-        } while((ret == HG_SUCCESS) && actual_count && !server_hg_progress_shutdown_flag);
-
-        if(!server_hg_progress_shutdown_flag)
-            HG_Progress(server_hg_context, 100);
-    }
-
-    return(NULL);
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME 0
+static int clock_gettime(int id, struct timespec *tp) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    tp->tv_sec = tv.tv_sec;
+    tp->tv_nsec = tv.tv_usec * 1000;
+    return(0);
 }
+#endif
 
 static void timespec_diff(struct timespec *start, struct timespec *stop,
                    struct timespec *result) {
@@ -149,6 +122,58 @@ static void timespec_diff(struct timespec *start, struct timespec *stop,
     }
     return;
 }
+
+static void* rpc_progress_fn(void* rpc_index);
+
+static void destructor_decorator(int) {
+  GLOBAL_RPC_SHUTDOWN = true;
+  BINPACKING_SHUTDOWN = true;
+}
+
+static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
+  std::list<binpack_segment_t> lst_binpack_segments;
+  /* we need to binpack */
+  bs->lock_server();
+  /* identify segments of objects to binpack. */
+  timespec binpack_diff_ts;
+  clock_gettime(CLOCK_REALTIME, &binpack_ts_before);
+  lst_binpack_segments = bs->get_objects(type);
+  clock_gettime(CLOCK_REALTIME, &binpack_ts_after);
+  num_binpacks += 1;
+  timespec_diff(&binpack_ts_before, &binpack_ts_after, &binpack_diff_ts);
+  avg_binpack_time *= (num_binpacks - 1);
+  avg_binpack_time += ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
+  avg_binpack_time /= num_binpacks;
+  bs->unlock_server();
+  char path[PATH_LEN];
+  if(lst_binpack_segments.size() > 0) {
+    bs->build_container(bs->get_next_container_name(path, type),
+                        lst_binpack_segments);
+    //TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
+  }
+}
+
+static void* binpacking_decorator(void *args) {
+  BuddyServer *bs = (BuddyServer *)args;
+  printf("\nStarting binpacking thread...\n");
+  do {
+    if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
+      invoke_binpacking(bs, COMBINED);
+    }
+    sleep(1);
+  } while(!BINPACKING_SHUTDOWN);
+  /* pack whatever is remaining */
+  invoke_binpacking(bs, COMBINED);
+  while (bs->get_individual_obj_count() > 0) {
+    invoke_binpacking(bs, INDIVIDUAL);
+  }
+  printf("Shutting down binpacking thread\n");
+  BINPACKING_SHUTDOWN = false;
+  pthread_exit(NULL);
+}
+/*
+ * start of class functions 
+ */
 
 chunk_info_t * BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
   chunk_info_t *new_chunk = new chunk_info_t;
@@ -177,29 +202,6 @@ size_t BuddyServer::get_data(chunk_info_t *chunk, void *buf, off_t offset, size_
   void *ptr = memcpy(buf, (void *)((char *)chunk->buf + offset), len);
   assert(ptr != NULL);
   return len;
-}
-
-bbos_obj_t *BuddyServer::populate_object_metadata(const char *name, mkobj_flag_t type) {
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(name);
-  if(it_map == object_container_map->end()) {
-    // return -BB_ENOOBJ;
-    return NULL;
-  }
-  // entry exists. place segment in right position.
-  std::list<container_segment_t *> *lst_segments = it_map->second;
-  std::list<container_segment_t *>::iterator it_list = lst_segments->begin();
-  bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED);
-  chunkid_t i = 0;
-  while(it_list != lst_segments->end()) {
-    for(i=(*it_list)->start_chunk; i<(*it_list)->end_chunk;i++) {
-      chunk_info_t *chunk = make_chunk(i, 0);
-      obj->lst_chunks->push_back(chunk);
-      chunk->c_seg = (*it_list);
-      obj->size += PFS_CHUNK_SIZE;
-    }
-    it_list++;
-  }
-  return obj;
 }
 
 std::list<binpack_segment_t> BuddyServer::all_binpacking_policy() {
@@ -396,6 +398,29 @@ bbos_obj_t * BuddyServer::create_bbos_cache_entry(const char *name, mkobj_flag_t
   return obj;
 }
 
+bbos_obj_t *BuddyServer::populate_object_metadata(const char *name, mkobj_flag_t type) {
+  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map = object_container_map->find(name);
+  if(it_map == object_container_map->end()) {
+    // return -BB_ENOOBJ;
+    return NULL;
+  }
+  // entry exists. place segment in right position.
+  std::list<container_segment_t *> *lst_segments = it_map->second;
+  std::list<container_segment_t *>::iterator it_list = lst_segments->begin();
+  bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED);
+  chunkid_t i = 0;
+  while(it_list != lst_segments->end()) {
+    for(i=(*it_list)->start_chunk; i<(*it_list)->end_chunk;i++) {
+      chunk_info_t *chunk = make_chunk(i, 0);
+      obj->lst_chunks->push_back(chunk);
+      chunk->c_seg = (*it_list);
+      obj->size += PFS_CHUNK_SIZE;
+    }
+    it_list++;
+  }
+  return obj;
+}
+
 BuddyServer::BuddyServer() {
   /* Default configs */
   port = 19900;
@@ -510,7 +535,8 @@ BuddyServer::~BuddyServer() {
     sleep(1);
   }
   pthread_join(progress_thread, NULL);
-  HG_Hl_finalize();
+  HG_Context_destroy(server_hg_context);   /* XXX return value */
+  HG_Finalize(server_hg_class);            /* XXX return value */ 
   hg_thread_pool_destroy(thread_pool);
   pthread_join(binpacking_thread, NULL);
   assert(!BINPACKING_SHUTDOWN);
@@ -832,127 +858,34 @@ size_t BuddyServer::read(const char *name, void *buf, off_t offset, size_t len) 
   return data_read;
 }
 
-static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
-  hg_handle_t *handle = (hg_handle_t *) args;
-  bbos_mkobj_out_t out;
-  bbos_mkobj_in_t in;
-  int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
-  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t) in.type);
-  ret = HG_Respond(*handle, NULL, NULL, &out);
-  assert(ret == HG_SUCCESS);
-  (void)ret;
-  HG_Destroy(*handle);
-  free(args);
-  return (hg_thread_ret_t) NULL;
+
+/***************** end class stuff **************/
+/* more static global */
+static timespec append_ts_before;
+static timespec append_ts_after;
+
+static hg_return_t bbos_read_decorator(const struct hg_cb_info *info);
+static hg_return_t bbos_append_decorator(const struct hg_cb_info *info);
+
+/* dedicated thread function to drive Mercury progress */
+static void* rpc_progress_fn(void* rpc_index)
+{
+    hg_return_t ret;
+    unsigned int actual_count;
+
+    while(!server_hg_progress_shutdown_flag && !GLOBAL_RPC_SHUTDOWN) {
+        do {
+            ret = HG_Trigger(server_hg_context, 0, 1, &actual_count);
+        } while((ret == HG_SUCCESS) && actual_count && !server_hg_progress_shutdown_flag);
+
+        if(!server_hg_progress_shutdown_flag)
+            HG_Progress(server_hg_context, 100);
+    }
+
+    return(NULL);
 }
 
-static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
-  struct bbos_append_cb *append_info = (struct bbos_append_cb*)info->arg;
-  bbos_append_out_t out;
-  timespec append_diff_ts;
-  BuddyServer *bs = (BuddyServer *) bs_obj;
-  char name[PATH_LEN];
-  int ret;
-  size_t len = 0;
-  clock_gettime(CLOCK_REALTIME, &append_ts_before);
-  out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
-  clock_gettime(CLOCK_REALTIME, &append_ts_after);
-  num_appends += 1;
-  timespec_diff(&append_ts_before, &append_ts_after, &append_diff_ts);
-  avg_append_latency *= (num_appends - 1);
-  avg_append_latency += ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
-  avg_append_latency /= num_appends;
-  ret = HG_Respond(append_info->handle, NULL, NULL, &out);
-  assert(ret == HG_SUCCESS);
-  (void)ret;
-  HG_Destroy(append_info->handle);
-  HG_Bulk_free(append_info->bulk_handle);
-  free(append_info->buffer);
-  free(append_info);
-  return HG_SUCCESS;
-}
-
-static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args) {
-  bbos_append_in_t in;
-  hg_handle_t *handle = (hg_handle_t *) args;
-  struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
-  int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
-  size_t input_size = HG_Bulk_get_size(in.bulk_handle);
-  append_info->buffer = (void *) calloc(1, input_size);
-  assert(append_info->buffer);
-  append_info->handle = *handle;
-  struct hg_info *hgi = HG_Get_info(*handle);
-  assert(hgi);
-  snprintf(append_info->name, PATH_LEN, "%s", in.name);
-  append_info->size = input_size;
-  ret = HG_Bulk_create(hgi->hg_class, 1,
-              &(append_info->buffer), &(input_size),
-  	          HG_BULK_WRITE_ONLY, &(append_info->bulk_handle));
-  assert(ret == HG_SUCCESS);
-  ret = HG_Bulk_transfer(hgi->context, bbos_append_decorator,
-          append_info, HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
-          append_info->bulk_handle, 0, input_size, HG_OP_ID_IGNORE);
-  assert(ret == HG_SUCCESS);
-  free(args);
-  return (hg_thread_ret_t) NULL;
-}
-
-static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
-  bbos_read_out_t out;
-  bbos_read_cb *read_info = (struct bbos_read_cb *) info->arg;
-  out.size = read_info->size;
-  int ret = HG_Respond(read_info->handle, NULL, NULL, &out);
-  assert(ret == HG_SUCCESS);
-  HG_Destroy(read_info->handle);
-  HG_Bulk_free(read_info->bulk_handle);
-  free(read_info);
-  (void)ret;
-  return HG_SUCCESS;
-}
-
-static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
-  bbos_read_in_t in;
-  hg_handle_t *handle = (hg_handle_t *) args;
-  struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
-  int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
-  void *outbuf = (void *) calloc(1, in.size);
-  assert(outbuf);
-  read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
-  read_info->remote_bulk_handle = in.bulk_handle;
-  read_info->handle = *handle;
-  struct hg_info *hgi = HG_Get_info(*handle);
-  assert(hgi);
-  ret = HG_Bulk_create(hgi->hg_class, 1,
-              &(outbuf), &(read_info->size),
-  	          HG_BULK_READ_ONLY, &(read_info->bulk_handle));
-  assert(ret == HG_SUCCESS);
-  ret = HG_Bulk_transfer(hgi->context, bbos_read_decorator, read_info,
-          HG_BULK_PUSH, hgi->addr, in.bulk_handle, 0, read_info->bulk_handle,
-          0, read_info->size, HG_OP_ID_IGNORE);
-  assert(ret == HG_SUCCESS);
-  free(outbuf);
-  free(args);
-  return (hg_thread_ret_t) NULL;
-}
-
-static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
-  hg_handle_t *handle = (hg_handle_t *) args;
-  bbos_get_size_out_t out;
-  bbos_get_size_in_t in;
-  int ret = HG_Get_input(*handle, &in);
-  assert(ret == HG_SUCCESS);
-  out.size = ((BuddyServer *)bs_obj)->get_size(in.name);
-  ret = HG_Respond(*handle, NULL, NULL, &out);
-  assert(ret == HG_SUCCESS);
-  (void)ret;
-  HG_Destroy(*handle);
-  free(args);
-  return (hg_thread_ret_t) NULL;
-}
-
+/* registered mercury fns "handler_decorator" to thread pool */
 static hg_return_t bbos_mkobj_handler_decorator(hg_handle_t handle) {
   struct hg_thread_work *work = (struct hg_thread_work *) malloc (sizeof(struct hg_thread_work));
   work->func = bbos_mkobj_handler;
@@ -993,51 +926,147 @@ static hg_return_t bbos_get_size_handler_decorator(hg_handle_t handle) {
   return HG_SUCCESS;
 }
 
-static void destructor_decorator(int) {
-  GLOBAL_RPC_SHUTDOWN = true;
-  BINPACKING_SHUTDOWN = true;
+
+struct bbos_append_cb {
+  void *buffer;
+  hg_bulk_t bulk_handle;
+  hg_handle_t handle;
+  hg_size_t size;
+  char name[PATH_LEN];
+};
+
+struct bbos_read_cb {
+  void *buffer;
+  hg_bulk_t bulk_handle;
+  hg_bulk_t remote_bulk_handle;
+  hg_handle_t handle;
+  char name[PATH_LEN];
+  off_t offset;
+  hg_size_t size;
+};
+
+
+
+/* called from thread pool */
+static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
+  hg_handle_t *handle = (hg_handle_t *) args;
+  bbos_mkobj_out_t out;
+  bbos_mkobj_in_t in;
+  int ret = HG_Get_input(*handle, &in);
+  assert(ret == HG_SUCCESS);
+  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, (mkobj_flag_t) in.type);
+  ret = HG_Respond(*handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  (void)ret;
+  HG_Destroy(*handle);
+  free(args);
+  return (hg_thread_ret_t) NULL;
 }
 
-static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
-  std::list<binpack_segment_t> lst_binpack_segments;
-  /* we need to binpack */
-  bs->lock_server();
-  /* identify segments of objects to binpack. */
-  timespec binpack_diff_ts;
-  clock_gettime(CLOCK_REALTIME, &binpack_ts_before);
-  lst_binpack_segments = bs->get_objects(type);
-  clock_gettime(CLOCK_REALTIME, &binpack_ts_after);
-  num_binpacks += 1;
-  timespec_diff(&binpack_ts_before, &binpack_ts_after, &binpack_diff_ts);
-  avg_binpack_time *= (num_binpacks - 1);
-  avg_binpack_time += ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
-  avg_binpack_time /= num_binpacks;
-  bs->unlock_server();
-  char path[PATH_LEN];
-  if(lst_binpack_segments.size() > 0) {
-    bs->build_container(bs->get_next_container_name(path, type),
-                        lst_binpack_segments);
-    //TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
-  }
+static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
+  bbos_read_in_t in;
+  hg_handle_t *handle = (hg_handle_t *) args;
+  struct bbos_read_cb *read_info = (struct bbos_read_cb *) malloc (sizeof(struct bbos_read_cb));
+  int ret = HG_Get_input(*handle, &in);
+  assert(ret == HG_SUCCESS);
+  void *outbuf = (void *) calloc(1, in.size);
+  assert(outbuf);
+  read_info->size = ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
+  read_info->remote_bulk_handle = in.bulk_handle;
+  read_info->handle = *handle;
+  struct hg_info *hgi = HG_Get_info(*handle);
+  assert(hgi);
+  ret = HG_Bulk_create(hgi->hg_class, 1,
+              &(outbuf), &(read_info->size),
+  	          HG_BULK_READ_ONLY, &(read_info->bulk_handle));
+  assert(ret == HG_SUCCESS);
+  ret = HG_Bulk_transfer(hgi->context, bbos_read_decorator, read_info,
+          HG_BULK_PUSH, hgi->addr, in.bulk_handle, 0, read_info->bulk_handle,
+          0, read_info->size, HG_OP_ID_IGNORE);
+  assert(ret == HG_SUCCESS);
+  free(outbuf);
+  free(args);
+  return (hg_thread_ret_t) NULL;
 }
 
-static void* binpacking_decorator(void *args) {
-  BuddyServer *bs = (BuddyServer *)args;
-  printf("\nStarting binpacking thread...\n");
-  do {
-    if(bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
-      invoke_binpacking(bs, COMBINED);
-    }
-    sleep(1);
-  } while(!BINPACKING_SHUTDOWN);
-  /* pack whatever is remaining */
-  invoke_binpacking(bs, COMBINED);
-  while (bs->get_individual_obj_count() > 0) {
-    invoke_binpacking(bs, INDIVIDUAL);
-  }
-  printf("Shutting down binpacking thread\n");
-  BINPACKING_SHUTDOWN = false;
-  pthread_exit(NULL);
+static HG_THREAD_RETURN_TYPE bbos_append_handler(void *args) {
+  bbos_append_in_t in;
+  hg_handle_t *handle = (hg_handle_t *) args;
+  struct bbos_append_cb *append_info = (struct bbos_append_cb *) malloc (sizeof(struct bbos_append_cb));
+  int ret = HG_Get_input(*handle, &in);
+  assert(ret == HG_SUCCESS);
+  hg_size_t input_size = HG_Bulk_get_size(in.bulk_handle);
+  append_info->buffer = (void *) calloc(1, input_size);
+  assert(append_info->buffer);
+  append_info->handle = *handle;
+  struct hg_info *hgi = HG_Get_info(*handle);
+  assert(hgi);
+  snprintf(append_info->name, PATH_LEN, "%s", in.name);
+  append_info->size = input_size;
+  ret = HG_Bulk_create(hgi->hg_class, 1,
+              &(append_info->buffer), &(input_size),
+  	          HG_BULK_WRITE_ONLY, &(append_info->bulk_handle));
+  assert(ret == HG_SUCCESS);
+  ret = HG_Bulk_transfer(hgi->context, bbos_append_decorator,
+          append_info, HG_BULK_PULL, hgi->addr, in.bulk_handle, 0,
+          append_info->bulk_handle, 0, input_size, HG_OP_ID_IGNORE);
+  assert(ret == HG_SUCCESS);
+  free(args);
+  return (hg_thread_ret_t) NULL;
+}
+
+static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
+  hg_handle_t *handle = (hg_handle_t *) args;
+  bbos_get_size_out_t out;
+  bbos_get_size_in_t in;
+  int ret = HG_Get_input(*handle, &in);
+  assert(ret == HG_SUCCESS);
+  out.size = ((BuddyServer *)bs_obj)->get_size(in.name);
+  ret = HG_Respond(*handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  (void)ret;
+  HG_Destroy(*handle);
+  free(args);
+  return (hg_thread_ret_t) NULL;
+}
+
+static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
+  struct bbos_append_cb *append_info = (struct bbos_append_cb*)info->arg;
+  bbos_append_out_t out;
+  timespec append_diff_ts;
+  BuddyServer *bs = (BuddyServer *) bs_obj;
+  char name[PATH_LEN];
+  int ret;
+  size_t len = 0;
+  clock_gettime(CLOCK_REALTIME, &append_ts_before);
+  out.size = bs->append(append_info->name, append_info->buffer, append_info->size);
+  clock_gettime(CLOCK_REALTIME, &append_ts_after);
+  num_appends += 1;
+  timespec_diff(&append_ts_before, &append_ts_after, &append_diff_ts);
+  avg_append_latency *= (num_appends - 1);
+  avg_append_latency += ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
+  avg_append_latency /= num_appends;
+  ret = HG_Respond(append_info->handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  (void)ret;
+  HG_Destroy(append_info->handle);
+  HG_Bulk_free(append_info->bulk_handle);
+  free(append_info->buffer);
+  free(append_info);
+  return HG_SUCCESS;
+}
+
+static hg_return_t bbos_read_decorator(const struct hg_cb_info *info) {
+  bbos_read_out_t out;
+  bbos_read_cb *read_info = (struct bbos_read_cb *) info->arg;
+  out.size = read_info->size;
+  int ret = HG_Respond(read_info->handle, NULL, NULL, &out);
+  assert(ret == HG_SUCCESS);
+  HG_Destroy(read_info->handle);
+  HG_Bulk_free(read_info->bulk_handle);
+  free(read_info);
+  (void)ret;
+  return HG_SUCCESS;
 }
 
 } // namespace bb

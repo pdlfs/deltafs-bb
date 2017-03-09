@@ -9,85 +9,26 @@
 
 #pragma once
 
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
 #include <list>
 #include <map>
-#include <mercury_hl_macros.h>
-#include <mercury_proc_string.h>
-/* Avoid compilation warning */
-#ifndef _WIN32
-    #undef _GNU_SOURCE
-#endif
-#include <mercury_thread.h>
-#include <mercury_config.h>
-#include <mercury_thread_pool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <assert.h>
-#include <stdlib.h>
-#include <iostream>
-#include <string>
-#include <string.h>
-#include <sstream>
-#include <fstream>
-#include <unistd.h>
-#include <aio.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/time.h>
+
+#include "bbos/bbos_api.h"
+
+#define PATH_LEN 256
 
 namespace pdlfs {
 namespace bb {
 
-MERCURY_GEN_PROC(bbos_mkobj_in_t,
-    ((hg_const_string_t)(name))\
-    ((hg_bool_t)(type)))
-MERCURY_GEN_PROC(bbos_mkobj_out_t,
-    ((hg_id_t)(status)))
-MERCURY_GEN_PROC(bbos_append_in_t,
-    ((hg_const_string_t)(name))\
-    ((hg_bulk_t)(bulk_handle)))
-MERCURY_GEN_PROC(bbos_append_out_t,
-    ((hg_size_t)(size)))
-MERCURY_GEN_PROC(bbos_read_in_t,
-    ((hg_const_string_t)(name))\
-    ((hg_size_t)(offset))\
-    ((hg_size_t)(size))\
-    ((hg_bulk_t)(bulk_handle)))
-MERCURY_GEN_PROC(bbos_read_out_t,
-    ((hg_size_t)(size)))
-MERCURY_GEN_PROC(bbos_get_size_in_t,
-    ((hg_const_string_t)(name)))
-MERCURY_GEN_PROC(bbos_get_size_out_t,
-    ((hg_size_t)(size)))
-
-static hg_return_t bbos_rpc_handler(hg_handle_t handle);
-
-typedef uint64_t oid_t;
-typedef uint64_t pfsid_t;
 typedef uint32_t chunkid_t;
+typedef bbos_mkobj_flag_t mkobj_flag_t;
 
-#define PATH_LEN 256
-
-#define BB_ENOSPC 1
-#define BB_SYNC_ERROR 2
-#define BB_CONFIG_ERROR 3
-#define BB_ENOMEM 4
-#define BB_INVALID_READ 5
-#define BB_ENOMANIFEST 6
-#define BB_ENOCONTAINER 7
-#define BB_ERROBJ 8
-#define BB_ENOOBJ 9
-
-enum mkobj_flag_t {READ_OPTIMIZED, WRITE_OPTIMIZED};
+enum binpacking_policy_t { RR_WITH_CURSOR, ALL};
 enum container_flag_t {COMBINED, INDIVIDUAL};
-enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
-enum stage_out_policy { SEQ_OUT, PAR_OUT };
-enum stage_in_policy { SEQ_IN, PAR_IN };
-
-typedef struct {
-  pthread_t thread;
-  std::list<struct hg_cb_info *> queue;
-} client_context_t;
 
 typedef struct {
   char container_name[PATH_LEN];
@@ -124,8 +65,7 @@ typedef struct {
   container_segment_t *c_seg;
 } binpack_segment_t;
 
-class BuddyServer
-{
+class BuddyServer {
   private:
     std::map<std::string, bbos_obj_t *> *object_map;
     std::map<std::string, std::list<container_segment_t *> *> *object_container_map;

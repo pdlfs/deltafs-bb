@@ -7,24 +7,51 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
+#include <assert.h>     /* note: assert only enabled for debug builds */
 #include <stdint.h>
 #include <stdio.h>
-#include <assert.h>
 #include <stdlib.h>
-#include <iostream>
-#include <string>
 #include <string.h>
-#include <sstream>
-#include <fstream>
 #include <unistd.h>
+
+#include <fstream>
+#include <iostream>
 #include <map>
-#include "../../include/buddyclient.h"
+#include <sstream>
+#include <string>
+
+#include <mercury_bulk.h>
+#include <mercury_proc_string.h>
+#include <mercury_thread.h>
+
+#include "bbos/bbos_api.h"
+#include "bbos_rpc.h"
+
+
+#define PSTRLEN 256 /* XXX was PATH_LEN */
 
 namespace pdlfs {
 namespace bb {
 
+/*
+ * BuddyClient: main object for client RPC stubs
+ */
+class BuddyClient {
+  private:
+    hg_thread_t progress_thread;
+    int port;
+
+  public:
+    BuddyClient();
+    ~BuddyClient();
+    int mkobj(const char *name, bbos_mkobj_flag_t type=WRITE_OPTIMIZED);
+    size_t append(const char *name, void *buf, size_t len);
+    size_t read(const char *name, void *buf, off_t offset, size_t len);
+    int get_size(const char *name);
+};
+
 #define NUM_CLIENT_CONFIGS 2 // keep in sync with configs enum and config_names
-char config_names[NUM_CLIENT_CONFIGS][PATH_LEN] = {
+static char config_names[NUM_CLIENT_CONFIGS][PSTRLEN] = {
   "BB_Server_port",
   "BB_Server_IP_address"
 };
@@ -46,7 +73,7 @@ static hg_id_t get_size_rpc_id;
 static hg_bool_t hg_progress_shutdown_flag;
 static std::map<std::string, uint64_t> pending_replies;
 
-static char server_url[PATH_LEN];
+static char server_url[PSTRLEN];
 
 struct operation_details {
   char name[256];
@@ -234,7 +261,7 @@ BuddyClient::BuddyClient() {
       switch (config_overrides) {
         case 0: port = atoi(v);
                 break;
-        case 1: snprintf(server_url, PATH_LEN, "tcp://%s:%d", v, port);
+        case 1: snprintf(server_url, PSTRLEN, "tcp://%s:%d", v, port);
                 break;
       }
     }
@@ -279,11 +306,12 @@ BuddyClient::~BuddyClient() {
     sleep(1);
   }
   hg_return_t ret = HG_SUCCESS;
-  ret = HG_Hl_finalize();
+  HG_Context_destroy(hg_context);   /* XXX return value */
+  HG_Finalize(hg_class);            /* XXX return value */
   assert(ret == HG_SUCCESS);
 }
 
-int BuddyClient::mkobj(const char *name, mkobj_flag_t type) {
+int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t type) {
   struct operation_details *op = new operation_details;
   sprintf(op->name, "%s", name);
   int retval = -1;
@@ -307,7 +335,8 @@ size_t BuddyClient::append(const char *name, void *buf, size_t len) {
   struct operation_details *op = new operation_details;
   sprintf(op->name, "%s", name);
   size_t retval = 0;
-  hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &(len),
+  hg_size_t hlen = len;
+  hg_return_t hg_ret = HG_Bulk_create(hg_class, 1, &buf, &hlen,
       HG_BULK_READ_ONLY,
       &(op->input.append_in.bulk_handle));
   assert(hg_ret == HG_SUCCESS);
@@ -367,6 +396,80 @@ int BuddyClient::get_size(const char *name) {
   free(op);
   return retval;
 }
+#if 0
+/* Avoid compilation warning */
+#ifndef _WIN32
+    #undef _GNU_SOURCE
+#endif
+#include <mercury_config.h>
+
+#endif
 
 } // namespace bb
 } // namespace pdlfs
+
+extern "C" {
+
+/*
+ * bbos_init: init function
+ */
+void *bbos_init(char *server) {
+    class pdlfs::bb::BuddyClient *bc = new pdlfs::bb::BuddyClient;
+
+    /* XXX: ctor error possible? */
+
+    if (server) {
+        fprintf(stderr, "bbos_init: server currently init'd through env XXX\n");
+    }
+
+    return(reinterpret_cast<void *>(bc));
+}
+
+/*
+ * bbos_finalize: shutdown the bbos
+ */
+void bbos_finalize(void *bbos) {
+    class pdlfs::bb::BuddyClient *bc = 
+                   reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
+    delete bbos;
+}
+
+/*
+ * bbos_mkobj: make a bbos object
+ */
+int bbos_mkobj(void *bbos, const char *name, bbos_mkobj_flag_t flag) {
+    class pdlfs::bb::BuddyClient *bc = 
+                   reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
+    return(bc->mkobj(name, flag));
+}
+
+/*
+ * bbos_append: append data to bbos object
+ */
+size_t bbos_append(void *bbos, const char *name, void *buf, size_t len) {
+    class pdlfs::bb::BuddyClient *bc = 
+                   reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
+    return(bc->append(name, buf, len));
+}
+
+/*
+ * bbos_read: read data from bbos object
+ */
+size_t bbos_read(void *bbos, const char *name, void *buf, off_t offset,
+                 size_t len) {
+    class pdlfs::bb::BuddyClient *bc = 
+                   reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
+    return(bc->read(name, buf, offset, len));
+}
+
+/*
+ * bbos_get_size: get current size of a bbos object
+ */
+off_t bbos_get_size(void *bbos, const char *name) {
+    class pdlfs::bb::BuddyClient *bc = 
+                   reinterpret_cast<pdlfs::bb::BuddyClient *>(bbos);
+    return(bc->get_size(name));
+}
+
+}  // extern "C"
+

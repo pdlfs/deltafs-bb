@@ -1,0 +1,9 @@
+#
+# bbos-config.cmake.in
+#
+
+include (CMakeFindDependencyMacro)
+find_dependency (mercury)
+
+include ("${CMAKE_CURRENT_LIST_DIR}/bbos-targets.cmake")
+
