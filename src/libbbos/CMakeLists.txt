@@ -31,19 +31,6 @@ set (bbos-vers "${BBOS_VERSION_MAJOR}.${BBOS_VERSION_MINOR}")
 set (BBOS_VERSION "${bbos-vers}.${BBOS_VERSION_PATCH}")
 
 #
-# additional compiler flags to be applied for this directory
-# (must come before any add_library/add_executable calls)
-#
-set (bbos-try-common-flags -Wpedantic -Wno-long-long -Wall
-                           -Wno-sign-compare -pthread)
-foreach (lcv ${bbos-try-common-flags})
-    CHECK_CXX_COMPILER_FLAG (${lcv} flag${lcv})
-    if (${flag${lcv}})
-        add_compile_options (${lcv})     # directory property
-    endif ()
-endforeach ()
-
-#
 # create library target (user can specify shared vs. static using
 # BUILD_SHARED_LIBS).  arrange for users of our lib to get the correct
 # -Is for our include directories.
