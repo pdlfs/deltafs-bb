@@ -27,10 +27,11 @@ typedef void *bbos_handle_t;
 
 /* error codes (all negative) */
 #define BB_SUCCESS        0          /* successful return */
-#define BB_INVALID_READ  -1          /* read past EOF */
-#define BB_ENOCONTAINER  -2          /* container not present */
-#define BB_ERROBJ        -3          /* mkobj failed */
-#define BB_ENOOBJ        -4          /* no such object */
+#define BB_FAILED        -1          /* generic failure */
+#define BB_INVALID_READ  -2          /* read past EOF */
+#define BB_ENOCONTAINER  -3          /* container not present */
+#define BB_ERROBJ        -4          /* mkobj failed */
+#define BB_ENOOBJ        -5          /* no such object */
 
 /*
  * bbos objects can be optimized for reading or writing when they are
@@ -44,11 +45,12 @@ enum bbos_mkobj_flag_t {
 
 /**
  * bbos_init: init bbos client and return a handle
+ * @param local local mercury URL (to use with HG_Init())
  * @param server mercury-style URL of server to connect to
  * @param bbosp returned handle is put in *bbosp
  * @return BB_SUCCESS or an error code
  */
-int bbos_init(char *server, bbos_handle_t *bbosp);
+int bbos_init(const char *local, const char *server, bbos_handle_t *bbosp);
 
 /**
  * bbos_finalize: finialize bbos client

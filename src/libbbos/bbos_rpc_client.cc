@@ -7,400 +7,510 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include <assert.h> /* note: assert only enabled for debug builds */
-#include <stdint.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
-#include <fstream>
-#include <iostream>
-#include <map>
-#include <sstream>
-#include <string>
-
+#include <mercury.h>
 #include <mercury_bulk.h>
 #include <mercury_proc_string.h>
 
-/* XXX: Avoid compilation warning - mercury_thread.h redefines _GNU_SOURCE */
 #ifndef _WIN32
-#undef _GNU_SOURCE
+#undef _GNU_SOURCE /* XXX: stop warning: mercury_thread.h redefs this */
 #endif
 #include <mercury_thread.h>
 
 #include "bbos/bbos_api.h"
 #include "bbos_rpc.h"
 
-#define PSTRLEN 256 /* XXX was PATH_LEN */
-
 namespace pdlfs {
 namespace bb {
 
-enum ACTION { MKOBJ, APPEND, READ, GET_SIZE }; /* XXX */
+/*
+ * operation_details: tracking state for a single active RPC.
+ * typically allocated on stack of caller.
+ */
+struct operation_details {
+  pthread_mutex_t olock;      /* lock the data structure */
+  pthread_cond_t ocond;       /* caller waits on this */
+  int opdone;                 /* callback sets to 1 when done */
+  hg_handle_t handle;         /* mercury handle for the RPC */
+  /* both in and out are on caller's stack */
+  void *in;                   /* input structure */
+  void *out;                  /* output structure (must HG_Free_output) */
+  hg_return_t outrv;          /* state of output */
+};
+
+/* this inits olock, ocond, and opdone */
+#define OD_INIT { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0 }
 
 /*
  * BuddyClient: main object for client RPC stubs
  */
 class BuddyClient {
  private:
-  hg_thread_t progress_thread;
-  int port;
+  char *server_url_;          /* strdup'd copy of server URL */
+  hg_addr_t server_addr_;     /* looked up server address */
+  hg_class_t *hg_class_;      /* mercury class */
+  hg_context_t *hg_context_;  /* mercury context (queues, etc.) */
+  hg_thread_t prog_thread_;   /* our progress thread */
+
+  /* ID#s for our 4 RPCs */
+  hg_id_t mkobj_rpc_id_;
+  hg_id_t append_rpc_id_;
+  hg_id_t read_rpc_id_;
+  hg_id_t get_size_rpc_id_;
+
+  pthread_mutex_t lock_;      /* lock (for multithreading) */
+  pthread_cond_t cond_;       /* for waiting for shutdown */
+  int running_;               /* progress thread running */
+  int shutdown_;              /* set to trigger shutdown */
+  int refcnt_;                /* number of active requests */
+
+  /* caller gains reference (fails if shutting down) */
+  int gainref() {
+    int rv;
+    pthread_mutex_lock(&lock_);
+    if (shutdown_) {
+      rv = BB_FAILED;
+    } else {
+      refcnt_++;
+      rv = BB_SUCCESS;
+    }
+    pthread_mutex_unlock(&lock_);
+    return(rv);
+  }
+
+  /* caller drops reference when done */
+  void dropref() {
+    pthread_mutex_lock(&lock_);
+    if (refcnt_ > 0) refcnt_--;
+    pthread_mutex_unlock(&lock_);
+  }
+
+  /* static class functions (mainly for C-style callbacks) */
+  static void *progress_main(void *args);
+  static hg_return_t lookup_cb(const struct hg_cb_info *cbi);
 
  public:
-  BuddyClient();
-  ~BuddyClient();
-  int mkobj(const char *name, bbos_mkobj_flag_t type = WRITE_OPTIMIZED);
-  size_t append(const char *name, void *buf, size_t len);
-  size_t read(const char *name, void *buf, off_t offset, size_t len);
-  int get_size(const char *name);
+  BuddyClient() : server_url_(NULL), server_addr_(HG_ADDR_NULL),
+                  hg_class_(NULL), hg_context_(NULL),
+                  running_(0), shutdown_(0), refcnt_(0) {
+    if (pthread_mutex_init(&lock_, NULL) != 0 ||
+        pthread_cond_init(&cond_, NULL) != 0) {
+        fprintf(stderr, "BuddyClient: mutex/cond init failure?\n");
+        abort();   /* this should never happen */
+    }
+  };
+  ~BuddyClient();             /* dtor: triggers shutdown process */
+
+  /* attach a freshly allocated BuddyClient to a server */
+  int attach(const char *local, const char *srvrurl);
+
+  /* our operations */
+  int mkobj(const char *name, bbos_mkobj_flag_t flag);
+  ssize_t append(const char *name, void *buf, size_t len);
+  ssize_t read(const char *name, void *buf, off_t offset, size_t len);
+  off_t get_size(const char *name);
 };
 
-#define NUM_CLIENT_CONFIGS 2  // keep in sync with configs enum and config_names
-static char config_names[NUM_CLIENT_CONFIGS][PSTRLEN] = {
-    "BB_Server_port", "BB_Server_IP_address"};
-enum client_configs { PORT };
+/*
+ * C-style functions
+ */
 
-static int done = 0;
-static pthread_cond_t done_cond = PTHREAD_COND_INITIALIZER;
-static pthread_mutex_t done_mutex = PTHREAD_MUTEX_INITIALIZER;
-static na_class_t *network_class;
-static hg_context_t *hg_context;
-static hg_class_t *hg_class;
-static hg_addr_t server_addr;
-static hg_id_t mkobj_rpc_id;
-static hg_id_t append_rpc_id;
-static hg_id_t read_rpc_id;
-static hg_id_t get_size_rpc_id;
-static hg_bool_t hg_progress_shutdown_flag;
-static std::map<std::string, uint64_t> pending_replies;
+/*
+ * operation_details_wait: wait for op to complete
+ */
+void operation_details_wait(struct operation_details *odp) {
+  pthread_mutex_lock(&odp->olock);
+  while (!odp->opdone) {
+    if (pthread_cond_wait(&odp->ocond, &odp->olock) != 0) { /* WAITS HERE */
+      fprintf(stderr, "BuddyClient:: op details cond wait failed?\n");
+      abort();   /* should never happen */
+    }
+  }
+  pthread_mutex_unlock(&odp->olock);
+}
 
-static char server_url[PSTRLEN];
+/* dummy RPC handler (we don't recv inbound RPCs) */
+static hg_return_t bbos_rpc_handler(hg_handle_t handle) { return HG_SUCCESS; }
 
-struct operation_details {
-  char name[256];
-  hg_handle_t handle;
-  enum ACTION action;
-  union {
-    bbos_mkobj_out_t mkobj_out;
-    bbos_append_out_t append_out;
-    bbos_read_out_t read_out;
-    bbos_get_size_out_t get_size_out;
-  } output;
-  union {
-    bbos_mkobj_in_t mkobj_in;
-    bbos_append_in_t append_in;
-    bbos_read_in_t read_in;
-    bbos_get_size_in_t get_size_in;
-  } input;
-};
+/*
+ * bbos_opdet_cb: generic operation details callback function
+ */
+static hg_return_t bbos_opdet_cb(const struct hg_cb_info *cbi) {
+  struct operation_details *odp;
 
-static void *client_rpc_progress_fn(void *args) {
+  odp = reinterpret_cast<struct operation_details *>(cbi->arg);
+  odp->outrv = HG_Get_output(odp->handle, odp->out);
+  if (odp->outrv != HG_SUCCESS) {
+    fprintf(stderr, "bbos_opdet_cb: get output failed?\n");
+  }
+
+  pthread_mutex_lock(&odp->olock);
+  odp->opdone = 1;
+  pthread_mutex_unlock(&odp->olock);
+  pthread_cond_signal(&odp->ocond);
+  return(HG_SUCCESS);
+}
+
+/*
+ * BuddyClient::progress_main: main function for our progress look
+ * (static class fn...)
+ */
+void *BuddyClient::progress_main(void *args) {
+  class BuddyClient *mybc = reinterpret_cast<class BuddyClient *>(args);
   hg_return_t ret;
   unsigned int actual_count;
 
-  while (!hg_progress_shutdown_flag) {
-    do {
-      ret = HG_Trigger(hg_context, 0, 1, &actual_count);
-    } while ((ret == HG_SUCCESS) && actual_count && !hg_progress_shutdown_flag);
+  pthread_mutex_lock(&mybc->lock_);
+  mybc->running_ = 1;
+  pthread_mutex_unlock(&mybc->lock_);
 
-    if (!hg_progress_shutdown_flag) HG_Progress(hg_context, 100);
+  while (!mybc->shutdown_ || mybc->refcnt_) {
+    do {
+      ret = HG_Trigger(mybc->hg_context_, 0, 1, &actual_count);
+    } while (ret == HG_SUCCESS && actual_count && !mybc->shutdown_);
+
+    if (!mybc->shutdown_) HG_Progress(mybc->hg_context_, 100);
   }
+  pthread_mutex_lock(&mybc->lock_);
+  mybc->running_ = 0;
+  pthread_mutex_unlock(&mybc->lock_);
+  pthread_cond_broadcast(&mybc->cond_);   /* let them know we are done */
+
   return (NULL);
 }
 
-static hg_return_t bbos_rpc_handler(hg_handle_t handle) { return HG_SUCCESS; }
+/*
+ * BuddyClient::lookup_cb: callback function when lookup completes.
+ * this only happens at attach time...
+ */
+hg_return_t BuddyClient::lookup_cb(const struct hg_cb_info *cbi) {
+  struct operation_details *op;
+  class BuddyClient *bcptr;
 
-static hg_return_t lookup_address(const struct hg_cb_info *callback_info) {
-  server_addr = (hg_addr_t)callback_info->info.lookup.addr;
-  pthread_mutex_lock(&done_mutex);
-  done++;
-  pthread_cond_signal(&done_cond);
-  pthread_mutex_unlock(&done_mutex);
-  return HG_SUCCESS;
-}
+  op = reinterpret_cast<struct operation_details *>(cbi->arg);
+  bcptr = reinterpret_cast<class BuddyClient *>(op->in);
 
-static hg_return_t bbos_mkobj_cb(const struct hg_cb_info *callback_info) {
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  hg_return_t hg_ret;
-  hg_ret = HG_Get_output(callback_info->info.forward.handle,
-                         &(op->output.mkobj_out));
-  if (hg_ret != HG_SUCCESS) abort();
-  pthread_mutex_lock(&done_mutex);
-  done++;
-  pthread_cond_signal(&done_cond);
-  pthread_mutex_unlock(&done_mutex);
-
-  /* Complete */
-  hg_ret = HG_Destroy(callback_info->info.forward.handle);
-  assert(hg_ret == HG_SUCCESS);
-  return HG_SUCCESS;
-}
-
-static hg_return_t issue_mkobj_rpc(struct operation_details *op) {
-  hg_return_t hg_ret;
-  hg_ret = HG_Create(hg_context, server_addr, mkobj_rpc_id, &(op->handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  assert(op->handle);
-
-  /* Fill input structure */
-  op->input.mkobj_in.name = (const char *)op->name;
-
-  /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_mkobj_cb, op, &op->input.mkobj_in);
-  assert(hg_ret == HG_SUCCESS);
-  return ((hg_return_t)NA_SUCCESS);
-}
-
-static hg_return_t bbos_append_cb(const struct hg_cb_info *callback_info) {
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  hg_return_t hg_ret;
-  hg_ret = HG_Get_output(callback_info->info.forward.handle,
-                         &(op->output.append_out));
-  if (hg_ret != HG_SUCCESS) abort();
-
-  pthread_mutex_lock(&done_mutex);
-  done++;
-  pthread_cond_signal(&done_cond);
-  pthread_mutex_unlock(&done_mutex);
-
-  /* Complete */
-  hg_ret = HG_Destroy(callback_info->info.forward.handle);
-  assert(hg_ret == HG_SUCCESS);
-  return HG_SUCCESS;
-}
-
-static hg_return_t issue_append_rpc(struct operation_details *op) {
-  hg_return_t hg_ret;
-  hg_ret = HG_Create(hg_context, server_addr, append_rpc_id, &(op->handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  assert(op->handle);
-
-  /* Fill input structure */
-  op->input.append_in.name = (const char *)op->name;
-
-  /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_append_cb, op, &op->input.append_in);
-  assert(hg_ret == HG_SUCCESS);
-  return ((hg_return_t)NA_SUCCESS);
-}
-
-static hg_return_t bbos_read_cb(const struct hg_cb_info *callback_info) {
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  hg_return_t hg_ret;
-  hg_ret =
-      HG_Get_output(callback_info->info.forward.handle, &(op->output.read_out));
-  if (hg_ret != HG_SUCCESS) abort();
-  pthread_mutex_lock(&done_mutex);
-  done++;
-  pthread_cond_signal(&done_cond);
-  pthread_mutex_unlock(&done_mutex);
-
-  /* Complete */
-  hg_ret = HG_Destroy(callback_info->info.forward.handle);
-  assert(hg_ret == HG_SUCCESS);
-  return HG_SUCCESS;
-}
-
-static hg_return_t issue_read_rpc(struct operation_details *op) {
-  hg_return_t hg_ret;
-  hg_ret = HG_Create(hg_context, server_addr, read_rpc_id, &(op->handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  assert(op->handle);
-
-  /* Fill input structure */
-  op->input.read_in.name = (const char *)op->name;
-  assert(hg_ret == HG_SUCCESS);
-
-  /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_read_cb, op, &op->input.read_in);
-  assert(hg_ret == HG_SUCCESS);
-  return ((hg_return_t)NA_SUCCESS);
-}
-
-static hg_return_t bbos_get_size_cb(const struct hg_cb_info *callback_info) {
-  struct operation_details *op = (struct operation_details *)callback_info->arg;
-  hg_return_t hg_ret;
-  hg_ret = HG_Get_output(callback_info->info.forward.handle,
-                         &(op->output.get_size_out));
-  if (hg_ret != HG_SUCCESS) abort();
-  pthread_mutex_lock(&done_mutex);
-  done++;
-  pthread_cond_signal(&done_cond);
-  pthread_mutex_unlock(&done_mutex);
-
-  /* Complete */
-  hg_ret = HG_Destroy(callback_info->info.forward.handle);
-  assert(hg_ret == HG_SUCCESS);
-  return HG_SUCCESS;
-}
-
-static hg_return_t issue_get_size_rpc(struct operation_details *op) {
-  hg_return_t hg_ret;
-  hg_ret = HG_Create(hg_context, server_addr, get_size_rpc_id, &(op->handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  assert(op->handle);
-
-  /* Fill input structure */
-  op->input.get_size_in.name = (const char *)op->name;
-
-  /* Forward call to remote addr and get a new request */
-  hg_ret = HG_Forward(op->handle, bbos_get_size_cb, op, &op->input.get_size_in);
-  assert(hg_ret == HG_SUCCESS);
-  return ((hg_return_t)NA_SUCCESS);
-}
-
-BuddyClient::BuddyClient() {
-  /* Default configs */
-  port = 19900;
-
-  /* Now scan the environment vars to find out what to override. */
-  // enum client_configs config_overrides = (pdlfs::bb::client_configs) 0;
-  int config_overrides = 0;
-  while (config_overrides < NUM_CLIENT_CONFIGS) {
-    const char *v = getenv(config_names[config_overrides]);
-    if (v != NULL) {
-      switch (config_overrides) {
-        case 0:
-          port = atoi(v);
-          break;
-        case 1:
-          snprintf(server_url, PSTRLEN, "tcp://%s:%d", v, port);
-          break;
-      }
-    }
-    config_overrides++;
+  if (cbi->ret != HG_SUCCESS) {
+    fprintf(stderr, "lookup_cb(%s): failed (%d)\n",
+            bcptr->server_url_, cbi->ret);
+  } else {
+    bcptr->server_addr_ = cbi->info.lookup.addr;
   }
 
-  na_return_t na_ret;
-  network_class = NULL;
-  hg_context = NULL;
-  hg_class = NULL;
+  pthread_mutex_lock(&op->olock);
+  op->opdone = 1;
+  pthread_mutex_unlock(&op->olock);
+  pthread_cond_broadcast(&op->ocond);  /* wake up waiter */
 
-  /* start mercury and register RPC */
-  network_class = NA_Initialize("tcp", NA_FALSE);
-  assert(network_class);
-
-  hg_class = HG_Init_na(network_class);
-  assert(hg_class);
-
-  hg_context = HG_Context_create(hg_class);
-  assert(hg_context);
-
-  hg_progress_shutdown_flag = false;
-  hg_thread_create(&progress_thread, client_rpc_progress_fn, hg_context);
-  mkobj_rpc_id = MERCURY_REGISTER(hg_class, "bbos_mkobj_rpc", bbos_mkobj_in_t,
-                                  bbos_mkobj_out_t, bbos_rpc_handler);
-  append_rpc_id =
-      MERCURY_REGISTER(hg_class, "bbos_append_rpc", bbos_append_in_t,
-                       bbos_append_out_t, bbos_rpc_handler);
-  read_rpc_id = MERCURY_REGISTER(hg_class, "bbos_read_rpc", bbos_read_in_t,
-                                 bbos_read_out_t, bbos_rpc_handler);
-  get_size_rpc_id =
-      MERCURY_REGISTER(hg_class, "bbos_get_size_rpc", bbos_get_size_in_t,
-                       bbos_get_size_out_t, bbos_rpc_handler);
-
-  /* lookup address only once */
-  na_ret = (na_return_t)HG_Addr_lookup(hg_context, lookup_address, NULL,
-                                       server_url, HG_OP_ID_IGNORE);
-  if (na_ret != NA_SUCCESS) abort();
-
-  pthread_mutex_lock(&done_mutex);
-  while (done < 1) pthread_cond_wait(&done_cond, &done_mutex);
-  done--;
-  pthread_mutex_unlock(&done_mutex);
+  return(HG_SUCCESS);
 }
 
+
+/*
+ * BuddyClient::attach: attach a freshly allocated client to a server.
+ * this is pulled out of the ctor so it can return error information.
+ */
+int BuddyClient::attach(const char *local, const char *srvrurl) {
+  void *bcptr = reinterpret_cast<void *>(this);
+  hg_return_t ret;
+  struct operation_details od = OD_INIT;
+  hg_op_id_t lookupop;
+
+  server_url_ = strdup(srvrurl);
+  if (!server_url_) {
+    fprintf(stderr, "BuddyClient::attach: out of memory\n");
+    return(BB_FAILED);
+  }
+
+  hg_class_ = HG_Init(local, HG_FALSE);
+  if (!hg_class_) {
+    fprintf(stderr, "BuddyClient::attach: HG_Init(%s) failed\n", local);
+    return(BB_FAILED);
+  }
+  hg_context_ = HG_Context_create(hg_class_);
+  if (!hg_context_) {
+    fprintf(stderr, "BuddyClient::attach: HG_Context_create failed!\n");
+    return(BB_FAILED);
+  }
+
+  if (hg_thread_create(&prog_thread_, BuddyClient::progress_main,
+                       bcptr) < 0) {
+    fprintf(stderr, "BuddyClient::attach: hg_thread_create failed!\n");
+    return(BB_FAILED);
+  }
+
+  /* XXX: register can't fail (but it must malloc?) */
+  mkobj_rpc_id_ = MERCURY_REGISTER(hg_class_, "bbos_mkobj_rpc",
+                  bbos_mkobj_in_t, bbos_mkobj_out_t, bbos_rpc_handler);
+  append_rpc_id_ = MERCURY_REGISTER(hg_class_, "bbos_append_rpc",
+                   bbos_append_in_t, bbos_append_out_t, bbos_rpc_handler);
+  read_rpc_id_ = MERCURY_REGISTER(hg_class_, "bbos_read_rpc",
+                 bbos_read_in_t, bbos_read_out_t, bbos_rpc_handler);
+  get_size_rpc_id_ = MERCURY_REGISTER(hg_class_, "bbos_get_size_rpc",
+                     bbos_get_size_in_t, bbos_get_size_out_t,
+                     bbos_rpc_handler);
+
+  /* now we need to lookup the server address */
+  od.handle = NULL;
+  od.in = bcptr;
+  ret = HG_Addr_lookup(hg_context_, BuddyClient::lookup_cb, &od,
+                       server_url_, &lookupop);
+  if (ret != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::attach: lookup failed (%d)\n", ret);
+    return(BB_FAILED);
+  }
+
+  /* wait for address to resolve */
+  operation_details_wait(&od);
+
+  if (server_addr_ == HG_ADDR_NULL) {
+    fprintf(stderr, "BuddyClient::attach: lookup op failed!\n");
+    return(BB_FAILED);
+  }
+
+  /* ready to roll! */
+  return(BB_SUCCESS);
+}
+
+/*
+ * ~BuddyClient::BuddyClient(): shutdown
+ */
 BuddyClient::~BuddyClient() {
-  while (pending_replies.size() > 0) {
-    sleep(1);
+
+  pthread_mutex_lock(&lock_);
+  shutdown_ = 1;
+  while (running_) {
+    if (pthread_cond_wait(&cond_, &lock_) != 0) { /* WAITS HERE */
+      fprintf(stderr, "~BuddyClient: cond wait failed?\n");
+      abort();   /* should never happen */
+    }
   }
-  hg_return_t ret = HG_SUCCESS;
-  HG_Context_destroy(hg_context); /* XXX return value */
-  HG_Finalize(hg_class);          /* XXX return value */
-  if (ret != HG_SUCCESS) abort();
+  pthread_mutex_unlock(&lock_);
+
+  if (server_addr_) {
+    HG_Addr_free(hg_class_, server_addr_);
+    server_addr_ = HG_ADDR_NULL;
+  }
+
+  /* ignore return values on these guys since we are going away */
+  if (hg_context_) {
+    HG_Context_destroy(hg_context_);
+    hg_context_ = NULL;
+  }
+  if (hg_class_) {
+    HG_Finalize(hg_class_);
+    hg_class_ = NULL;
+  }
+
+  pthread_mutex_destroy(&lock_);
+  pthread_cond_destroy(&cond_);
+  if (server_url_) {
+    free(server_url_);
+    server_url_ = NULL;
+  }
 }
 
-int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t type) {
-  struct operation_details *op = new operation_details;
-  sprintf(op->name, "%s", name);
-  int retval = -1;
-  hg_return_t rpc_ret;
-  op->action = MKOBJ;
-  op->input.mkobj_in.name = (const char *)op->name;
-  op->input.mkobj_in.readopt = (type == READ_OPTIMIZED) ? HG_TRUE : HG_FALSE;
-  rpc_ret = issue_mkobj_rpc(op);
-  if (rpc_ret != HG_SUCCESS) abort();
-  pthread_mutex_lock(&done_mutex);
-  while (done < 1) pthread_cond_wait(&done_cond, &done_mutex);
-  done--;
-  pthread_mutex_unlock(&done_mutex);
-  retval = op->output.mkobj_out.status;
-  free(op);
-  return retval;
+/*
+ * BuddyClient::mkobj: make an object
+ */
+int BuddyClient::mkobj(const char *name, bbos_mkobj_flag_t flag) {
+  struct operation_details od = OD_INIT;
+  bbos_mkobj_in_t in;
+  bbos_mkobj_out_t out;
+  hg_return_t hgret;
+  int ret = this->gainref();
+
+  if (ret != BB_SUCCESS)
+    return(ret);
+
+  /* now holding reference */
+  in.name = name;
+  in.readopt = (flag == READ_OPTIMIZED) ? HG_TRUE : HG_FALSE;
+
+  hgret = HG_Create(hg_context_, server_addr_, mkobj_rpc_id_, &od.handle);
+  if (hgret != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::mkobj: HG_Create failed (%d)?\n", hgret);
+    ret = BB_FAILED;
+    goto done;
+  }
+  od.in = &in;
+  od.out = &out;
+  hgret = HG_Forward(od.handle, bbos_opdet_cb, &od, &in);
+
+  if (hgret == HG_SUCCESS)
+    operation_details_wait(&od);
+
+  if (hgret == HG_SUCCESS && od.outrv == HG_SUCCESS) {
+    ret = out.status;
+    HG_Free_output(od.handle, &out);
+  } else {
+    ret = BB_FAILED;
+  }
+
+  HG_Destroy(od.handle);
+
+done:
+  this->dropref();
+  return(ret);
 }
 
-size_t BuddyClient::append(const char *name, void *buf, size_t len) {
-  struct operation_details *op = new operation_details;
-  sprintf(op->name, "%s", name);
-  size_t retval = 0;
-  hg_size_t hlen = len;
-  hg_return_t hg_ret =
-      HG_Bulk_create(hg_class, 1, &buf, &hlen, HG_BULK_READ_ONLY,
-                     &(op->input.append_in.bulk_handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  op->action = APPEND;
-  hg_ret = issue_append_rpc(op);
-  assert(hg_ret == HG_SUCCESS);
-  pthread_mutex_lock(&done_mutex);
-  while (done < 1) pthread_cond_wait(&done_cond, &done_mutex);
-  done--;
-  pthread_mutex_unlock(&done_mutex);
-  retval = (size_t)op->output.append_out.size;
-  HG_Bulk_free(op->input.append_in.bulk_handle);
-  free(op);
-  return retval;
+
+/*
+ * BuddyClient::append: append data to an object
+ */
+ssize_t BuddyClient::append(const char *name, void *buf, size_t len) {
+  struct operation_details od = OD_INIT;
+  bbos_append_in_t in;
+  bbos_append_out_t out;
+  hg_return_t hgret;
+  hg_size_t hlen = len;   /* hg_size_t is 64 bits, size_t 32 */
+  ssize_t ret = this->gainref();
+
+  if (ret != BB_SUCCESS)
+    return(ret);
+
+  /* now holding reference */
+  in.name = name;
+  if ((hgret = HG_Bulk_create(hg_class_, 1, &buf, &hlen, HG_BULK_READ_ONLY,
+                              &in.bulk_handle)) != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::append: bulk create failed (%d)\n", hgret);
+    ret = BB_FAILED;
+    goto done;
+  }
+  hgret = HG_Create(hg_context_, server_addr_, append_rpc_id_, &od.handle);
+  if (hgret != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::append: HG_Create failed (%d)?\n", hgret);
+    HG_Bulk_free(in.bulk_handle);
+    ret = BB_FAILED;
+    goto done;
+  }
+
+  od.in = &in;
+  od.out = &out;
+  hgret = HG_Forward(od.handle, bbos_opdet_cb, &od, &in);
+
+  if (hgret == HG_SUCCESS)
+    operation_details_wait(&od);
+
+  if (hgret == HG_SUCCESS && od.outrv == HG_SUCCESS) {
+    ret = out.size;
+    HG_Free_output(od.handle, &out);
+  } else {
+    ret = BB_FAILED;
+  }
+
+  HG_Bulk_free(in.bulk_handle);
+  HG_Destroy(od.handle);
+
+done:
+  this->dropref();
+  return(ret);
 }
 
-size_t BuddyClient::read(const char *name, void *buf, off_t offset,
-                         size_t len) {
-  struct operation_details *op = new operation_details;
-  sprintf(op->name, "%s", name);
-  int retval;
-  op->input.read_in.offset = (hg_size_t)offset;
-  op->input.read_in.size = (hg_size_t)len;
-  hg_return_t hg_ret =
-      HG_Bulk_create(hg_class, 1, &buf, &(op->input.read_in.size),
-                     HG_BULK_WRITE_ONLY, &(op->input.read_in.bulk_handle));
-  if (hg_ret != HG_SUCCESS) abort();
-  op->action = READ;
-  hg_ret = issue_read_rpc(op);
-  assert(hg_ret == HG_SUCCESS);
-  pthread_mutex_lock(&done_mutex);
-  while (done < 1) pthread_cond_wait(&done_cond, &done_mutex);
-  done--;
-  pthread_mutex_unlock(&done_mutex);
-  retval = (size_t)op->output.read_out.size;
-  HG_Bulk_free(op->input.read_in.bulk_handle);
-  free(op);
-  return retval;
+
+/*
+ * BuddyClient::read: read an object
+ */
+ssize_t BuddyClient::read(const char *name, void *buf,
+                          off_t offset, size_t len) {
+  struct operation_details od = OD_INIT;
+  bbos_read_in_t in;
+  bbos_read_out_t out;
+  hg_return_t hgret;
+  hg_size_t hlen = len;   /* hg_size_t is 64 bits, size_t 32 */
+  ssize_t ret = this->gainref();
+
+  if (ret != BB_SUCCESS)
+    return(ret);
+
+  /* now holding reference */
+  in.name = name;
+  in.offset = offset;
+  in.size = len;
+  if ((hgret = HG_Bulk_create(hg_class_, 1, &buf, &hlen, HG_BULK_WRITE_ONLY,
+                              &in.bulk_handle)) != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::read: bulk create failed (%d)\n", hgret);
+    ret = BB_FAILED;
+    goto done;
+  }
+
+  hgret = HG_Create(hg_context_, server_addr_, read_rpc_id_, &od.handle);
+  if (hgret != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::read: HG_Create failed (%d)?\n", hgret);
+    HG_Bulk_free(in.bulk_handle);
+    ret = BB_FAILED;
+    goto done;
+  }
+
+  od.in = &in;
+  od.out = &out;
+  hgret = HG_Forward(od.handle, bbos_opdet_cb, &od, &in);
+
+  if (hgret == HG_SUCCESS)
+    operation_details_wait(&od);
+
+  if (hgret == HG_SUCCESS && od.outrv == HG_SUCCESS) {
+    ret = out.size;
+    HG_Free_output(od.handle, &out);
+  } else {
+    ret = BB_FAILED;
+  }
+
+  HG_Bulk_free(in.bulk_handle);
+  HG_Destroy(od.handle);
+
+done:
+  this->dropref();
+  return(ret);
 }
 
-int BuddyClient::get_size(const char *name) {
-  struct operation_details *op = new operation_details;
-  sprintf(op->name, "%s", name);
-  int retval = -1;
-  hg_return_t ret_rpc;
-  op->action = GET_SIZE;
-  ret_rpc = issue_get_size_rpc(op);
-  if (ret_rpc != HG_SUCCESS) abort();
-  pthread_mutex_lock(&done_mutex);
-  while (done < 1) pthread_cond_wait(&done_cond, &done_mutex);
-  done--;
-  pthread_mutex_unlock(&done_mutex);
-  retval = op->output.get_size_out.size;
-  free(op);
-  return retval;
+/*
+ * BuddyClient::get_size: get size of an object
+ */
+off_t BuddyClient::get_size(const char *name) {
+  struct operation_details od = OD_INIT;
+  bbos_get_size_in_t in;
+  bbos_get_size_out_t out;
+  hg_return_t hgret;
+  off_t ret = this->gainref();
+
+  if (ret != BB_SUCCESS)
+    return(ret);
+
+  /* now holding reference */
+  in.name = name;
+
+  hgret = HG_Create(hg_context_, server_addr_, get_size_rpc_id_, &od.handle);
+  if (hgret != HG_SUCCESS) {
+    fprintf(stderr, "BuddyClient::get_size: HG_Create failed (%d)?\n", hgret);
+    ret = BB_FAILED;
+    goto done;
+  }
+
+  od.in = &in;
+  od.out = &out;
+  hgret = HG_Forward(od.handle, bbos_opdet_cb, &od, &in);
+
+  if (hgret == HG_SUCCESS)
+    operation_details_wait(&od);
+
+  if (hgret == HG_SUCCESS && od.outrv == HG_SUCCESS) {
+    ret = out.size;
+    HG_Free_output(od.handle, &out);
+  } else {
+    ret = BB_FAILED;
+  }
+
+  HG_Destroy(od.handle);
+
+done:
+  this->dropref();
+  return(ret);
 }
 
 }  // namespace bb
@@ -411,21 +521,23 @@ extern "C" {
 /*
  * bbos_init: init function
  */
-int bbos_init(char *server, bbos_handle_t *bbosp) {
+int bbos_init(const char *local, const char *server, bbos_handle_t *bbosp) {
   class pdlfs::bb::BuddyClient *bc = new pdlfs::bb::BuddyClient;
+  int rv;
 
-  /* XXX: ctor error possible? */
+  rv = bc->attach(local, server);
 
-  if (server) {
-    fprintf(stderr, "bbos_init: server currently init'd through env XXX\n");
+  if (rv == BB_SUCCESS) {
+    *bbosp = reinterpret_cast<bbos_handle_t>(bc);
+  } else {
+    delete bc;
   }
 
-  *bbosp = reinterpret_cast<bbos_handle_t>(bc);
-  return (BB_SUCCESS);
+  return (rv);
 }
 
 /*
- * bbos_finalize: shutdown the bbos
+ * bbos_finalize: shutdown the bbos (chains off to dtor to do the work)
  */
 void bbos_finalize(bbos_handle_t bbos) {
   class pdlfs::bb::BuddyClient *bc =

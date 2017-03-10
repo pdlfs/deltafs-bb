@@ -99,8 +99,27 @@ int main(int argc, char **argv) {
     input[i] = genRandom();
   }
   int ret;
+
+  const char *srvr, *local;
+  char server_url[512];
+  srvr = getenv("BB_Server");
+  if (!srvr) {
+    const char *port, *addr;
+    port = getenv("BB_Server_port");
+    if (port == NULL) port = "19900";
+    addr = getenv("BB_Server_IP_address");
+    if (addr == NULL) {
+      printf("neither BB_Server nor BB_Server_IP_address set!\n");
+      exit(1);
+    }
+    snprintf(server_url, sizeof(server_url), "tcp://%s:%s", addr, port);
+    srvr = server_url;
+  }
+  local = getenv("BB_Local");
+  if (!local) local = "tcp";
+
   bbos_handle_t bc;
-  ret = bbos_init(NULL, &bc);
+  ret = bbos_init(local, srvr, &bc);
   if (ret != BB_SUCCESS) abort();
   ret = bbos_mkobj(bc, obj_name, WRITE_OPTIMIZED);
   if (ret != 0) abort();
