@@ -65,7 +65,7 @@ typedef struct {
   container_segment_t *c_seg;
 } binpack_segment_t;
 
-class BuddyServer {
+class BuddyStore {
  private:
   std::map<std::string, bbos_obj_t *> *object_map;
   std::map<std::string, std::list<container_segment_t *> *>
@@ -103,8 +103,8 @@ class BuddyServer {
                                        mkobj_flag_t type = WRITE_OPTIMIZED);
 
  public:
-  BuddyServer();
-  ~BuddyServer();
+  BuddyStore();
+  ~BuddyStore();
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);
   int build_container(const char *c_name,
                       std::list<binpack_segment_t> lst_binpack_segments);

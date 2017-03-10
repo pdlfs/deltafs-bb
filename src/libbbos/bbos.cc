@@ -134,7 +134,7 @@ static void destructor_decorator(int) {
   BINPACKING_SHUTDOWN = true;
 }
 
-static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
+static void invoke_binpacking(BuddyStore *bs, container_flag_t type) {
   std::list<binpack_segment_t> lst_binpack_segments;
   /* we need to binpack */
   bs->lock_server();
@@ -159,7 +159,7 @@ static void invoke_binpacking(BuddyServer *bs, container_flag_t type) {
 }
 
 static void *binpacking_decorator(void *args) {
-  BuddyServer *bs = (BuddyServer *)args;
+  BuddyStore *bs = (BuddyStore *)args;
   printf("\nStarting binpacking thread...\n");
   do {
     if (bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
@@ -180,7 +180,7 @@ static void *binpacking_decorator(void *args) {
  * start of class functions
  */
 
-chunk_info_t *BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
+chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk) {
   chunk_info_t *new_chunk = new chunk_info_t;
   new_chunk->id = id;
   if (malloc_chunk == 1) {
@@ -195,20 +195,20 @@ chunk_info_t *BuddyServer::make_chunk(chunkid_t id, int malloc_chunk) {
   return new_chunk;
 }
 
-size_t BuddyServer::add_data(chunk_info_t *chunk, void *buf, size_t len) {
+size_t BuddyStore::add_data(chunk_info_t *chunk, void *buf, size_t len) {
   // Checking of whether data can fit into this chunk has to be done outside
   memcpy((void *)((char *)chunk->buf + chunk->size), buf, len);
   chunk->size += len;
   return len;
 }
 
-size_t BuddyServer::get_data(chunk_info_t *chunk, void *buf, off_t offset,
+size_t BuddyStore::get_data(chunk_info_t *chunk, void *buf, off_t offset,
                              size_t len) {
   memcpy(buf, (void *)((char *)chunk->buf + offset), len);
   return len;
 }
 
-std::list<binpack_segment_t> BuddyServer::all_binpacking_policy() {
+std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   // FIXME: hardcoded to all objects
   std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
@@ -235,7 +235,7 @@ std::list<binpack_segment_t> BuddyServer::all_binpacking_policy() {
   return segments;
 }
 
-std::list<binpack_segment_t> BuddyServer::rr_with_cursor_binpacking_policy() {
+std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   chunkid_t num_chunks = CONTAINER_SIZE / PFS_CHUNK_SIZE;
   std::list<bbos_obj_t *> packed_objects_list;
@@ -273,7 +273,7 @@ std::list<binpack_segment_t> BuddyServer::rr_with_cursor_binpacking_policy() {
   return segments;
 }
 
-std::list<binpack_segment_t> BuddyServer::get_all_segments() {
+std::list<binpack_segment_t> BuddyStore::get_all_segments() {
   std::list<binpack_segment_t> segments;
   bbos_obj_t *obj = individual_objects->front();
   individual_objects->pop_front();
@@ -303,7 +303,7 @@ std::list<binpack_segment_t> BuddyServer::get_all_segments() {
  * Build the global manifest file used to bootstrap BBOS from all the
  * containers and their contents.
  */
-void BuddyServer::build_global_manifest(const char *manifest_name) {
+void BuddyStore::build_global_manifest(const char *manifest_name) {
   // we have to iterate through the object container map and write it to
   // a separate file.
   FILE *fp = fopen(manifest_name, "w+");
@@ -333,7 +333,7 @@ void BuddyServer::build_global_manifest(const char *manifest_name) {
 /*
  * Build the object container mapping from the start of container files.
  */
-int BuddyServer::build_object_container_map(const char *container_name) {
+int BuddyStore::build_object_container_map(const char *container_name) {
   std::ifstream container(container_name);
   if (!container) {
     return BB_ENOCONTAINER;
@@ -400,7 +400,7 @@ int BuddyServer::build_object_container_map(const char *container_name) {
   return (0);
 }
 
-bbos_obj_t *BuddyServer::create_bbos_cache_entry(const char *name,
+bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
                                                  mkobj_flag_t type) {
   bbos_obj_t *obj = new bbos_obj_t;
   obj->lst_chunks = new std::list<chunk_info_t *>;
@@ -423,7 +423,7 @@ bbos_obj_t *BuddyServer::create_bbos_cache_entry(const char *name,
   return obj;
 }
 
-bbos_obj_t *BuddyServer::populate_object_metadata(const char *name,
+bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
                                                   mkobj_flag_t type) {
   std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
       object_container_map->find(name);
@@ -448,7 +448,7 @@ bbos_obj_t *BuddyServer::populate_object_metadata(const char *name,
   return obj;
 }
 
-BuddyServer::BuddyServer() {
+BuddyStore::BuddyStore() {
   /* Default configs */
   port = 19900;
   PFS_CHUNK_SIZE = 8388608;            // 8 MB
@@ -577,7 +577,7 @@ BuddyServer::BuddyServer() {
   }
 }
 
-BuddyServer::~BuddyServer() {
+BuddyStore::~BuddyStore() {
   while (!GLOBAL_RPC_SHUTDOWN) {
     sleep(1);
   }
@@ -643,7 +643,7 @@ BuddyServer::~BuddyServer() {
   delete individual_objects;
 }
 
-std::list<binpack_segment_t> BuddyServer::get_objects(container_flag_t type) {
+std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
     case COMBINED:
       if ((BINPACKING_SHUTDOWN == true) && (dirty_bbos_size > 0)) {
@@ -665,7 +665,7 @@ std::list<binpack_segment_t> BuddyServer::get_objects(container_flag_t type) {
   return segments;
 }
 
-int BuddyServer::build_container(
+int BuddyStore::build_container(
     const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
   char c_path[PATH_LEN];
   snprintf(c_path, PATH_LEN, "%s/%s", output_dir, c_name);
@@ -767,7 +767,7 @@ int BuddyServer::build_container(
   return 0;
 }
 
-int BuddyServer::mkobj(const char *name, mkobj_flag_t type) {
+int BuddyStore::mkobj(const char *name, mkobj_flag_t type) {
   // Initialize an in-memory object
   if (create_bbos_cache_entry(name, type) == NULL) {
     return BB_ERROBJ;
@@ -778,26 +778,26 @@ int BuddyServer::mkobj(const char *name, mkobj_flag_t type) {
   return 0;
 }
 
-int BuddyServer::lock_server() { return pthread_mutex_lock(&bbos_mutex); }
+int BuddyStore::lock_server() { return pthread_mutex_lock(&bbos_mutex); }
 
-int BuddyServer::unlock_server() { return pthread_mutex_unlock(&bbos_mutex); }
+int BuddyStore::unlock_server() { return pthread_mutex_unlock(&bbos_mutex); }
 
 /* Get total dirty data size */
-size_t BuddyServer::get_dirty_size() { return dirty_bbos_size; }
+size_t BuddyStore::get_dirty_size() { return dirty_bbos_size; }
 
 /* Get number of individual objects. */
-uint32_t BuddyServer::get_individual_obj_count() {
+uint32_t BuddyStore::get_individual_obj_count() {
   return individual_objects->size();
 }
 
 /* Get binpacking threshold */
-size_t BuddyServer::get_binpacking_threshold() { return binpacking_threshold; }
+size_t BuddyStore::get_binpacking_threshold() { return binpacking_threshold; }
 
 /* Get binpacking policy */
-size_t BuddyServer::get_binpacking_policy() { return binpacking_policy; }
+size_t BuddyStore::get_binpacking_policy() { return binpacking_policy; }
 
 /* Get name of next container */
-const char *BuddyServer::get_next_container_name(char *path,
+const char *BuddyStore::get_next_container_name(char *path,
                                                  container_flag_t type) {
   // TODO: get container name from a microservice
   switch (type) {
@@ -812,7 +812,7 @@ const char *BuddyServer::get_next_container_name(char *path,
 }
 
 /* Get size of BB object */
-size_t BuddyServer::get_size(const char *name) {
+size_t BuddyStore::get_size(const char *name) {
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
       object_map->find(std::string(name));
   if (it_obj_map == object_map->end()) {
@@ -845,7 +845,7 @@ size_t BuddyServer::get_size(const char *name) {
 }
 
 /* Append to a BB object */
-size_t BuddyServer::append(const char *name, void *buf, size_t len) {
+size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   bbos_obj_t *obj = object_map->find(std::string(name))->second;
   assert(obj != NULL);
   pthread_mutex_lock(&obj->mutex);
@@ -885,7 +885,7 @@ size_t BuddyServer::append(const char *name, void *buf, size_t len) {
 }
 
 /* Read from a BB object */
-size_t BuddyServer::read(const char *name, void *buf, off_t offset,
+size_t BuddyStore::read(const char *name, void *buf, off_t offset,
                          size_t len) {
   bbos_obj_t *obj = object_map->find(std::string(name))->second;
   if (obj == NULL && read_phase == 1) {
@@ -1035,7 +1035,7 @@ static HG_THREAD_RETURN_TYPE bbos_mkobj_handler(void *args) {
   ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
   flag = (in.readopt) ? READ_OPTIMIZED : WRITE_OPTIMIZED;
-  out.status = ((BuddyServer *)bs_obj)->mkobj(in.name, flag);
+  out.status = ((BuddyStore *)bs_obj)->mkobj(in.name, flag);
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
@@ -1054,7 +1054,7 @@ static HG_THREAD_RETURN_TYPE bbos_read_handler(void *args) {
   void *outbuf = (void *)calloc(1, in.size);
   assert(outbuf);
   read_info->size =
-      ((BuddyServer *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
+      ((BuddyStore *)bs_obj)->read(in.name, outbuf, in.offset, in.size);
   read_info->remote_bulk_handle = in.bulk_handle;
   read_info->handle = *handle;
   struct hg_info *hgi = HG_Get_info(*handle);
@@ -1105,7 +1105,7 @@ static HG_THREAD_RETURN_TYPE bbos_get_size_handler(void *args) {
   bbos_get_size_in_t in;
   int ret = HG_Get_input(*handle, &in);
   assert(ret == HG_SUCCESS);
-  out.size = ((BuddyServer *)bs_obj)->get_size(in.name);
+  out.size = ((BuddyStore *)bs_obj)->get_size(in.name);
   ret = HG_Respond(*handle, NULL, NULL, &out);
   assert(ret == HG_SUCCESS);
   (void)ret;
@@ -1118,7 +1118,7 @@ static hg_return_t bbos_append_decorator(const struct hg_cb_info *info) {
   struct bbos_append_cb *append_info = (struct bbos_append_cb *)info->arg;
   bbos_append_out_t out;
   timespec append_diff_ts;
-  BuddyServer *bs = (BuddyServer *)bs_obj;
+  BuddyStore *bs = (BuddyStore *)bs_obj;
   int ret;
   clock_gettime(CLOCK_REALTIME, &append_ts_before);
   out.size =

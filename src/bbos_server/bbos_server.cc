@@ -14,7 +14,7 @@ using namespace pdlfs; /* XXX */
 using namespace bb; /* XXX */
 
 int main(int argc, char **argv) {
-  BuddyServer *bs = new BuddyServer();
+  BuddyStore *bs = new BuddyStore();
   delete bs;
   return 0;
 }
