@@ -4,7 +4,7 @@
 #
 
 # list of source files
-set (bbos-srcs bbos.cc bbos_rpc_client.cc bbos_rpc_svc.cc)
+set (bbos-srcs bbos.cc bbos_rpc_client.cc)
 
 #
 # configure/load in standard modules we plan to use and probe the enviroment

@@ -12,6 +12,7 @@ include (CheckCXXCompilerFlag)
 set (bbos-try-common-flags -Wpedantic -Wall
      -Wno-variadic-macros     # using mercury with c++ triggers this
      -Wno-sign-compare        # XXX: reconsider?
+     -Wno-c99-extensions      # clang
      ### -Wno-long-long       # ok now?
 )
 foreach (lcv ${bbos-try-common-flags})
