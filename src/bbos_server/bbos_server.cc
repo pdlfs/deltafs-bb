@@ -838,7 +838,7 @@ int main(int argc, char **argv) {
   if (srvr_url == NULL) {
     srvr_url = getenv("BB_Server_IP_address");
     port = getenv("BB_Server_port");
-    if (!port) 
+    if (!port)
       port = "19900";
     if (!srvr_url) usage("need a server url");
     snprintf(s_url, sizeof(s_url), "tcp://%s:%s", srvr_url, port);
@@ -880,7 +880,7 @@ int main(int argc, char **argv) {
   server->wait();
 
   printf("bbos_server: server finished!\n");
-  printf("bbos_server: max-concurrent-reqs: %d\n", 
+  printf("bbos_server: max-concurrent-reqs: %d\n",
          server->max_concurrent_reqs());
   delete server;
 

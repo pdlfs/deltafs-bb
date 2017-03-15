@@ -70,7 +70,7 @@ static void timespec_diff(struct timespec *start, struct timespec *stop,
  */
 
 /*
- * BuddyStore::binpacker_main: main routine for binpack thread 
+ * BuddyStore::binpacker_main: main routine for binpack thread
  */
 void *BuddyStore::binpacker_main(void *args) {
   BuddyStore *bs = (BuddyStore *)args;
@@ -501,7 +501,7 @@ BuddyStore::~BuddyStore() {
          num_chunks_written_);
   printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %" PRIu64 "\n",
          CONTAINER_SIZE_, num_containers_written_);
-  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", OBJ_CHUNK_SIZE_, 
+  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", OBJ_CHUNK_SIZE_,
          num_appends_);
   printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
   printf("============================================\n");
