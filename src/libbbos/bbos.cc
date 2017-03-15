@@ -30,8 +30,7 @@ namespace bb {
 
 /*XXXCDC: REMOVE BB_Server_port, BB_Server_IP_address, BB_Num_workers */
 
-#define NUM_SERVER_CONFIGS \
-  8  // keep in sync with configs enum and config_names
+#define NUM_SERVER_CONFIGS 8  // keep in sync with configs enum and config_names
 static char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
     "BB_Lustre_chunk_size",
     "BB_Mercury_transfer_size",
@@ -42,7 +41,7 @@ static char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
     "BB_Output_dir",
     "BB_Read_phase"};
 
-#ifndef CLOCK_REALTIME   /* tmp hack to make it compile on macosx */
+#ifndef CLOCK_REALTIME /* tmp hack to make it compile on macosx */
 #define CLOCK_REALTIME 0
 static int clock_gettime(int id, struct timespec *tp) {
   struct timeval tv;
@@ -113,7 +112,7 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
   char path[PATH_LEN];
   if (lst_binpack_segments.size() > 0) {
     this->build_container(this->get_next_container_name(path, type),
-                        lst_binpack_segments);
+                          lst_binpack_segments);
     // TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
   }
 }
@@ -141,7 +140,7 @@ size_t BuddyStore::add_data(chunk_info_t *chunk, void *buf, size_t len) {
 }
 
 size_t BuddyStore::get_data(chunk_info_t *chunk, void *buf, off_t offset,
-                             size_t len) {
+                            size_t len) {
   memcpy(buf, (void *)((char *)chunk->buf + offset), len);
   return len;
 }
@@ -165,7 +164,8 @@ std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
         ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
     seg.obj->dirty_size -= last_chunk_size;
     pthread_mutex_unlock(&seg.obj->mutex);
-    dirty_bbos_size_ -= ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
+    dirty_bbos_size_ -=
+        ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
     dirty_bbos_size_ -= last_chunk_size;
     segments.push_back(seg);
     it_map++;
@@ -339,7 +339,7 @@ int BuddyStore::build_object_container_map(const char *container_name) {
 }
 
 bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
-                                                 mkobj_flag_t type) {
+                                                mkobj_flag_t type) {
   bbos_obj_t *obj = new bbos_obj_t;
   obj->lst_chunks = new std::list<chunk_info_t *>;
   obj->last_chunk_flushed = 0;
@@ -362,7 +362,7 @@ bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
 }
 
 bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
-                                                  mkobj_flag_t type) {
+                                                 mkobj_flag_t type) {
   std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
       object_container_map_->find(name);
   if (it_map == object_container_map_->end()) {
@@ -479,7 +479,7 @@ BuddyStore::BuddyStore() {
 
 BuddyStore::~BuddyStore() {
   BINPACKING_SHUTDOWN_ = true;
-  pthread_join(binpacking_thread_, NULL);  /* WAIT HERE */
+  pthread_join(binpacking_thread_, NULL); /* WAIT HERE */
   assert(!BINPACKING_SHUTDOWN_);
   assert(dirty_bbos_size_ == 0);
   assert(dirty_individual_size_ == 0);
@@ -490,7 +490,7 @@ BuddyStore::~BuddyStore() {
   printf(
       "============= BBOS MEASUREMENTS (OBJ_CHUNK_SIZE_ = %lu, "
       "PFS_CHUNK_SIZE_ = %lu) =============\n",
-       OBJ_CHUNK_SIZE_, PFS_CHUNK_SIZE_);
+      OBJ_CHUNK_SIZE_, PFS_CHUNK_SIZE_);
   printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time_);
   printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
          avg_container_response_time_);
@@ -543,11 +543,11 @@ BuddyStore::~BuddyStore() {
  */
 static void print_pot(FILE *to, const char *tag, uint64_t val) {
   uint64_t mb;
-  if (val % (1024*1024)) {
+  if (val % (1024 * 1024)) {
     fprintf(to, "\t%-20.20s= %" PRIu64 "\n", tag, val);
     return;
   }
-  mb = val / (1024*1024);
+  mb = val / (1024 * 1024);
   if (mb < 1024 || (mb % 1024) != 0) {
     fprintf(to, "\t%-20.20s= %" PRIu64 " MiB\n", tag, mb);
     return;
@@ -571,7 +571,6 @@ void BuddyStore::print_config(FILE *fp) {
   fprintf(fp, "\tbinpack-policy      = %d\n", binpacking_policy_);
   fprintf(fp, "\tread-phase          = %d\n", read_phase_);
 }
-
 
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
@@ -666,7 +665,8 @@ int BuddyStore::build_container(
     // populate the object_container_map_
     container_segment_t *c_seg = new container_segment_t;
     strcpy(c_seg->container_name, c_name);
-    c_seg->start_chunk = b_obj.start_chunk * (PFS_CHUNK_SIZE_ / OBJ_CHUNK_SIZE_);
+    c_seg->start_chunk =
+        b_obj.start_chunk * (PFS_CHUNK_SIZE_ / OBJ_CHUNK_SIZE_);
     c_seg->end_chunk = b_obj.end_chunk * (PFS_CHUNK_SIZE_ / OBJ_CHUNK_SIZE_);
     c_seg->offset = c_offset;
     c_offset += (OBJ_CHUNK_SIZE_ * (b_obj.end_chunk - b_obj.start_chunk));
@@ -689,7 +689,8 @@ int BuddyStore::build_container(
   fclose(fp);
   clock_gettime(CLOCK_REALTIME, &container_ts_after_);
   num_containers_written_ += 1;
-  timespec_diff(&container_ts_before_, &container_ts_after_, &container_diff_ts);
+  timespec_diff(&container_ts_before_, &container_ts_after_,
+                &container_diff_ts);
   avg_container_response_time_ *= (num_containers_written_ - 1);
   avg_container_response_time_ +=
       ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
@@ -728,7 +729,7 @@ size_t BuddyStore::get_binpacking_policy() { return binpacking_policy_; }
 
 /* Get name of next container */
 const char *BuddyStore::get_next_container_name(char *path,
-                                                 container_flag_t type) {
+                                                container_flag_t type) {
   // TODO: get container name from a microservice
   switch (type) {
     case COMBINED:
@@ -827,8 +828,7 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
 }
 
 /* Read from a BB object */
-size_t BuddyStore::read(const char *name, void *buf, off_t offset,
-                         size_t len) {
+size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   bbos_obj_t *obj = object_map->find(std::string(name))->second;
   if (obj == NULL && read_phase_ == 1) {
     obj = populate_object_metadata(name, WRITE_OPTIMIZED);
