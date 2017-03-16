@@ -25,7 +25,6 @@ namespace pdlfs {
 namespace bb {
 
 typedef uint32_t chunkid_t;
-typedef bbos_mkobj_flag_t mkobj_flag_t;
 
 enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
 enum container_flag_t { COMBINED, INDIVIDUAL };
@@ -47,7 +46,7 @@ typedef struct {
 typedef struct {
   char name[PATH_LEN];
   size_t size;
-  mkobj_flag_t type;
+  bbos_mkobj_flag_t type;
   std::list<chunk_info_t *> *lst_chunks;  // list of chunks in BBOS object
   chunkid_t last_chunk_flushed;
   size_t dirty_size;
@@ -104,9 +103,9 @@ class BuddyStore {
   std::list<binpack_segment_t> get_all_segments();
   void build_global_manifest(const char *manifest_name);
   int build_object_container_map(const char *container_name);
-  bbos_obj_t *create_bbos_cache_entry(const char *name, mkobj_flag_t type);
+  bbos_obj_t *create_bbos_cache_entry(const char *name, bbos_mkobj_flag_t type);
   bbos_obj_t *populate_object_metadata(const char *name,
-                                       mkobj_flag_t type = WRITE_OPTIMIZED);
+                                    bbos_mkobj_flag_t type = WRITE_OPTIMIZED);
   void invoke_binpacking(container_flag_t type);
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);
   int build_container(const char *c_name,
@@ -126,7 +125,7 @@ class BuddyStore {
   ~BuddyStore();
 
   void print_config(FILE *fp);
-  int mkobj(const char *name, mkobj_flag_t type = WRITE_OPTIMIZED);
+  int mkobj(const char *name, bbos_mkobj_flag_t type = WRITE_OPTIMIZED);
   size_t append(const char *name, void *buf, size_t len);
   size_t read(const char *name, void *buf, off_t offset, size_t len);
   size_t get_size(const char *name);

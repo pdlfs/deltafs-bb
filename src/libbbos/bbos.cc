@@ -340,7 +340,7 @@ int BuddyStore::build_object_container_map(const char *container_name) {
 }
 
 bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
-                                                mkobj_flag_t type) {
+                                                bbos_mkobj_flag_t type) {
   bbos_obj_t *obj = new bbos_obj_t;
   obj->lst_chunks = new std::list<chunk_info_t *>;
   obj->last_chunk_flushed = 0;
@@ -363,7 +363,7 @@ bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
 }
 
 bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
-                                                 mkobj_flag_t type) {
+                                                 bbos_mkobj_flag_t type) {
   std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
       object_container_map_->find(name);
   if (it_map == object_container_map_->end()) {
@@ -700,7 +700,7 @@ int BuddyStore::build_container(
   return 0;
 }
 
-int BuddyStore::mkobj(const char *name, mkobj_flag_t type) {
+int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
   // Initialize an in-memory object
   if (create_bbos_cache_entry(name, type) == NULL) {
     return BB_ERROBJ;
