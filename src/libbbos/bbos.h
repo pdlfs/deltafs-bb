@@ -95,15 +95,6 @@ class BuddyStore {
   uint64_t num_containers_written_;
   uint64_t num_appends_;
   uint64_t num_binpacks_;
-  timespec binpack_ts_before_;
-  timespec binpack_ts_after_;
-  timespec container_ts_before_;
-  timespec chunk_ts_before_;
-  timespec chunk_ts_after_;
-  timespec container_ts_after_;
-  timespec append_ts_before_;
-  timespec append_ts_after_;
-
 
   chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk = 1);
   size_t add_data(chunk_info_t *chunk, void *buf, size_t len);

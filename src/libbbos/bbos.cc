@@ -94,16 +94,17 @@ void *BuddyStore::binpacker_main(void *args) {
  * BuddyStore::invoke_binpacking: called from binpacker main thread
  */
 void BuddyStore::invoke_binpacking(container_flag_t type) {
+  struct timespec ts_before, ts_after;
   std::list<binpack_segment_t> lst_binpack_segments;
   /* we need to binpack */
   this->lock_server();
   /* identify segments of objects to binpack. */
   timespec binpack_diff_ts;
-  clock_gettime(CLOCK_REALTIME, &binpack_ts_before_);
+  clock_gettime(CLOCK_REALTIME, &ts_before);
   lst_binpack_segments = this->get_objects(type);
-  clock_gettime(CLOCK_REALTIME, &binpack_ts_after_);
+  clock_gettime(CLOCK_REALTIME, &ts_after);
   num_binpacks_ += 1;
-  timespec_diff(&binpack_ts_before_, &binpack_ts_after_, &binpack_diff_ts);
+  timespec_diff(&ts_before, &ts_after, &binpack_diff_ts);
   avg_binpack_time_ *= (num_binpacks_ - 1);
   avg_binpack_time_ +=
       ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
@@ -596,6 +597,7 @@ std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
 
 int BuddyStore::build_container(
     const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
+  struct timespec cont_ts_before, cont_ts_after, cnk_ts_before, cnk_ts_after;
   char c_path[PATH_LEN];
   snprintf(c_path, PATH_LEN, "%s/%s", output_dir_, c_name);
   binpack_segment_t b_obj;
@@ -604,7 +606,7 @@ int BuddyStore::build_container(
   off_t start_offset = 0;
   timespec chunk_diff_ts;
   timespec container_diff_ts;
-  clock_gettime(CLOCK_REALTIME, &container_ts_before_);
+  clock_gettime(CLOCK_REALTIME, &cont_ts_before);
   FILE *fp = fopen(c_path, "w+");
   assert(fp != NULL);
   std::list<binpack_segment_t>::iterator it_bpack =
@@ -644,12 +646,12 @@ int BuddyStore::build_container(
     while (it_chunks != b_obj.obj->lst_chunks->end() &&
            (*it_chunks)->id < b_obj.end_chunk) {
       // FIXME: write to DW in PFS_CHUNK_SIZE_ - https://github.com/hpc/libhio
-      clock_gettime(CLOCK_REALTIME, &chunk_ts_before_);
+      clock_gettime(CLOCK_REALTIME, &cnk_ts_before);
       data_written =
           fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
-      clock_gettime(CLOCK_REALTIME, &chunk_ts_after_);
+      clock_gettime(CLOCK_REALTIME, &cnk_ts_after);
       num_chunks_written_ += 1;
-      timespec_diff(&chunk_ts_before_, &chunk_ts_after_, &chunk_diff_ts);
+      timespec_diff(&cnk_ts_before, &cnk_ts_after, &chunk_diff_ts);
       avg_chunk_response_time_ *= (num_chunks_written_ - 1);
       avg_chunk_response_time_ +=
           ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
@@ -687,9 +689,9 @@ int BuddyStore::build_container(
     it_bpack++;
   }
   fclose(fp);
-  clock_gettime(CLOCK_REALTIME, &container_ts_after_);
+  clock_gettime(CLOCK_REALTIME, &cont_ts_after);
   num_containers_written_ += 1;
-  timespec_diff(&container_ts_before_, &container_ts_after_,
+  timespec_diff(&cont_ts_before, &cont_ts_after,
                 &container_diff_ts);
   avg_container_response_time_ *= (num_containers_written_ - 1);
   avg_container_response_time_ +=
@@ -777,8 +779,8 @@ size_t BuddyStore::get_size(const char *name) {
 
 /* Append to a BB object */
 size_t BuddyStore::append(const char *name, void *buf, size_t len) {
-  timespec append_diff_ts;
-  clock_gettime(CLOCK_REALTIME, &append_ts_before_);
+  struct timespec ts_before, ts_after, append_diff_ts;
+  clock_gettime(CLOCK_REALTIME, &ts_before);
 
   bbos_obj_t *obj = object_map->find(std::string(name))->second;
   assert(obj != NULL);
@@ -816,9 +818,9 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   }
   pthread_mutex_unlock(&obj->mutex);
 
-  clock_gettime(CLOCK_REALTIME, &append_ts_after_);
+  clock_gettime(CLOCK_REALTIME, &ts_after);
   num_appends_ += 1;
-  timespec_diff(&append_ts_before_, &append_ts_after_, &append_diff_ts);
+  timespec_diff(&ts_before, &ts_after, &append_diff_ts);
   avg_append_latency_ *= (num_appends_ - 1);
   avg_append_latency_ +=
       ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
