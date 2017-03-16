@@ -56,6 +56,8 @@ class BuddyClient {
   hg_class_t *hg_class_;      /* mercury class */
   hg_context_t *hg_context_;  /* mercury context (queues, etc.) */
   hg_thread_t prog_thread_;   /* our progress thread */
+  int made_thread_;           /* set if we need to join thread @ shudown */
+  int extmode_;               /* XXX: non-zero if EXTernal hg mode */
 
   /* ID#s for our 4 RPCs */
   hg_id_t mkobj_rpc_id_;
@@ -87,6 +89,12 @@ class BuddyClient {
   void dropref() {
     pthread_mutex_lock(&lock_);
     if (refcnt_ > 0) refcnt_--;
+
+    /* XXX: EXT mode send signal when done (since no local prog. thread) */
+    if (extmode_ && shutdown_ && refcnt_ == 0)
+       pthread_cond_broadcast(&cond_);
+    /* XXX: EXT mode */
+
     pthread_mutex_unlock(&lock_);
   }
 
@@ -96,8 +104,8 @@ class BuddyClient {
 
  public:
   BuddyClient() : server_url_(NULL), server_addr_(HG_ADDR_NULL),
-                  hg_class_(NULL), hg_context_(NULL),
-                  running_(0), shutdown_(0), refcnt_(0) {
+                  hg_class_(NULL), hg_context_(NULL), made_thread_(0),
+                  extmode_(0), running_(0), shutdown_(0), refcnt_(0) {
     if (pthread_mutex_init(&lock_, NULL) != 0 ||
         pthread_cond_init(&cond_, NULL) != 0) {
         fprintf(stderr, "BuddyClient: mutex/cond init failure?\n");
@@ -105,6 +113,24 @@ class BuddyClient {
     }
   };
   ~BuddyClient();             /* dtor: triggers shutdown process */
+
+  /*
+   * XXX: enable EXTernal mode for working around mercury issues.
+   * the idea is to run this after new'ing, but before calling attach.
+   * we assume the mercury instance we are handed is already fully up
+   * and running with its own progress thread (so we can add our callbacks
+   * and lookup the server address)...
+   */
+  void set_extmode(hg_class_t *cls, hg_context_t *ctx) {
+    if (running_ || shutdown_ || refcnt_ || !cls || !ctx) {
+      fprintf(stderr, "BuddyClient::set_extmode usage error!\n");
+      abort();
+    }
+    hg_class_ = cls;
+    hg_context_ = ctx;
+    extmode_ = 1;
+  };
+  /* XXX: EXT mode */
 
   /* attach a freshly allocated BuddyClient to a server */
   int attach(const char *local, const char *srvrurl);
@@ -214,6 +240,8 @@ hg_return_t BuddyClient::lookup_cb(const struct hg_cb_info *cbi) {
 /*
  * BuddyClient::attach: attach a freshly allocated client to a server.
  * this is pulled out of the ctor so it can return error information.
+ * assumes caller will delete this object on failure (so dtor will
+ * handle freeing any resources allocated here).
  */
 int BuddyClient::attach(const char *local, const char *srvrurl) {
   void *bcptr = reinterpret_cast<void *>(this);
@@ -226,6 +254,9 @@ int BuddyClient::attach(const char *local, const char *srvrurl) {
     fprintf(stderr, "BuddyClient::attach: out of memory\n");
     return(BB_FAILED);
   }
+
+  /* XXX: EXT mode uses previously provided hg_class/context */
+  if (extmode_) goto extmode_skip;
 
   hg_class_ = HG_Init(local, HG_FALSE);
   if (!hg_class_) {
@@ -243,6 +274,9 @@ int BuddyClient::attach(const char *local, const char *srvrurl) {
     fprintf(stderr, "BuddyClient::attach: hg_thread_create failed!\n");
     return(BB_FAILED);
   }
+  made_thread_ = 1;  /* so we join it at shutdown time */
+
+extmode_skip:     /* XXX: EXT mode */
 
   /* XXX: register can't fail (but it must malloc?) */
   mkobj_rpc_id_ = MERCURY_REGISTER(hg_class_, "bbos_mkobj_rpc",
@@ -290,11 +324,28 @@ BuddyClient::~BuddyClient() {
       abort();   /* should never happen */
     }
   }
+  if (made_thread_)
+    hg_thread_join(prog_thread_);
+
+  if (extmode_) { /* XXX EXT mode, no prog thread, wait for refcnt_ == 0 */
+    while (refcnt_ > 0) {
+      if (pthread_cond_wait(&cond_, &lock_) != 0) { /* WAITS HERE */
+        fprintf(stderr, "~BuddyClient: ext cond wait failed?\n");
+        abort();   /* should never happen */
+      }
+    }
+  }  /* XXX: EXT mode */
+
   pthread_mutex_unlock(&lock_);
 
   if (server_addr_) {
     HG_Addr_free(hg_class_, server_addr_);
     server_addr_ = HG_ADDR_NULL;
+  }
+
+  if (extmode_) {     /* XXX EXT mode: don't free external mercury structs */
+    hg_context_ = NULL;
+    hg_class_ = NULL;
   }
 
   /* ignore return values on these guys since we are going away */
@@ -535,6 +586,31 @@ int bbos_init(const char *local, const char *server, bbos_handle_t *bbosp) {
 
   return (rv);
 }
+
+/* XXX: EXT mode */
+/*
+ * bbos_init_ext: init function using external mercury mode
+ */
+int bbos_init_ext(const char *local, const char *server,
+                  void *vhclass, void *vhctx, bbos_handle_t *bbosp) {
+  class pdlfs::bb::BuddyClient *bc = new pdlfs::bb::BuddyClient;
+  int rv;
+
+  hg_class_t *hcls = reinterpret_cast<hg_class_t *>(vhclass);
+  hg_context_t *hctx = reinterpret_cast<hg_context_t *>(vhctx);
+  bc->set_extmode(hcls, hctx);
+
+  rv = bc->attach(local, server);
+
+  if (rv == BB_SUCCESS) {
+    *bbosp = reinterpret_cast<bbos_handle_t>(bc);
+  } else {
+    delete bc;
+  }
+
+  return (rv);
+}
+/* XXX: EXT mode */
 
 /*
  * bbos_finalize: shutdown the bbos (chains off to dtor to do the work)
