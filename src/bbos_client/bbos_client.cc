@@ -94,6 +94,94 @@ void print_stats(const char *obj_name, size_t chunk_size) {
   printf("##############################################\n");
 }
 
+/*
+ * START: external mercury stuff
+ */
+#include <mercury.h>
+#include <pthread.h>
+static int g_extmode = 0;
+static hg_class_t *g_hgclass = NULL;
+static hg_context_t *g_hgcontext = NULL;
+static int g_made_thread = 0;
+static int g_shutdown = 0;
+static int g_running = 0;
+static pthread_t g_progress_thread;
+pthread_mutex_t g_lock;
+pthread_cond_t g_cond;
+
+/*
+ * progress_main: main function for our progress loop
+ */
+void *progress_main(void *args) {
+  hg_return_t ret;
+  unsigned int actual_count;
+
+  pthread_mutex_lock(&g_lock);
+  g_running = 1;
+  pthread_mutex_unlock(&g_lock);
+
+  while (!g_shutdown) {
+    do {
+      ret = HG_Trigger(g_hgcontext, 0, 1, &actual_count);
+    } while (ret == HG_SUCCESS && actual_count && !g_shutdown);
+
+    if (!g_shutdown) HG_Progress(g_hgcontext, 100);
+  }
+  pthread_mutex_lock(&g_lock);
+  g_running = 0;
+  pthread_mutex_unlock(&g_lock);
+  pthread_cond_broadcast(&g_cond);   /* let them know we are done */
+
+  return (NULL);
+}
+
+
+int my_bbos_init(const char *local, const char *server, bbos_handle_t *bbosp) {
+  char *env;
+  int bb_ext;
+  int rv;
+  env = getenv("BB_Ext");
+  bb_ext = (env) ? atoi(env) : 0;
+  /* can force it here */
+  // bb_ext = 1;
+  if (!bb_ext) {
+    printf("bbos_init: using internal mercury class\n");
+    rv = bbos_init(local, server, bbosp);
+    printf("bbos_init: done int with %d\n", rv);
+    return(rv);
+  }
+  printf("bbos_init: using external mercury class\n");
+
+  pthread_mutex_init(&g_lock, NULL);
+  pthread_cond_init(&g_cond, NULL);
+  g_hgclass = HG_Init(local, HG_FALSE);
+  if (!g_hgclass) {
+    fprintf(stderr, "my_bbos_init: HG_Init(%s) failed\n", local);
+    return(BB_FAILED);
+  }
+  g_hgcontext = HG_Context_create(g_hgclass);
+  if (!g_hgcontext) {
+    fprintf(stderr, "my_bbos_init: HG_Context_create failed!\n");
+    return(BB_FAILED);
+  }
+
+  if (pthread_create(&g_progress_thread, NULL, progress_main, NULL) != 0) {
+    fprintf(stderr, "my_bbos_init: thread create failed!\n");
+    return(BB_FAILED);
+  }
+  g_made_thread = 1;  /* so we join it at shutdown time */
+  g_extmode = 1;
+
+  rv = bbos_init_ext(local, server, (void*)g_hgclass,
+                       (void*)g_hgcontext, bbosp);
+  printf("bbos_init: done ext with %d\n", rv);
+  return(rv);
+}
+
+/*
+ * END: external mercury stuff
+ */
+
 int main(int argc, char **argv) {
   size_t file_size = 0;
   char obj_name[PATH_LEN] = "";
@@ -164,7 +252,7 @@ int main(int argc, char **argv) {
   if (!local) local = "tcp";
 
   bbos_handle_t bc;
-  ret = bbos_init(local, srvr, &bc);
+  ret = my_bbos_init(local, srvr, &bc);
   if (ret != BB_SUCCESS) abort();
   ret = bbos_mkobj(bc, obj_name, WRITE_OPTIMIZED);
   if (ret != 0) abort();
@@ -179,5 +267,19 @@ int main(int argc, char **argv) {
   bbos_finalize(bc);
 
   print_stats((const char *)obj_name, chunk_size);
+
+  if (g_extmode && g_running) {
+    pthread_mutex_lock(&g_lock);
+    g_shutdown = 1;
+    printf("shutdown external mercury\n");
+    while (g_running) {
+      if (pthread_cond_wait(&g_cond, &g_lock) != 0) {
+        fprintf(stderr, "cond wait failed!\n");
+        abort();
+      }
+    }
+    printf("done: shutdown external mercury\n");
+    pthread_mutex_unlock(&g_lock);
+  }
   return 0;
 }
