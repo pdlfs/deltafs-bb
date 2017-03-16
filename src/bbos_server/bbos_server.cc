@@ -418,7 +418,7 @@ hg_return_t BuddyServer::generic_handler(hg_handle_t handle) {
 HG_THREAD_RETURN_TYPE BuddyServer::mkobj_handler(void *args) {
   struct thread_args *ta;
   bbos_mkobj_in_t in;
-  mkobj_flag_t flag;
+  bbos_mkobj_flag_t flag;
   bbos_mkobj_out_t out;
   hg_return_t hgret;
 
