@@ -122,7 +122,7 @@ chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk) {
   chunk_info_t *new_chunk = new chunk_info_t;
   new_chunk->id = id;
   if (malloc_chunk == 1) {
-    new_chunk->buf = (void *)malloc(sizeof(char) * PFS_CHUNK_SIZE_);
+    new_chunk->buf = (void *)malloc(sizeof(char) * o_.PFS_CHUNK_SIZE);
   } else {
     new_chunk->buf = NULL;
   }
@@ -162,11 +162,11 @@ std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
     seg.end_chunk = seg.obj->lst_chunks->size();
     size_t last_chunk_size = seg.obj->lst_chunks->back()->size;
     seg.obj->dirty_size -=
-        ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
+        ((seg.end_chunk - 1) - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
     seg.obj->dirty_size -= last_chunk_size;
     pthread_mutex_unlock(&seg.obj->objmutex);
     dirty_bbos_size_ -=
-        ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
+        ((seg.end_chunk - 1) - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
     dirty_bbos_size_ -= last_chunk_size;
     segments.push_back(seg);
     it_map++;
@@ -176,7 +176,7 @@ std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
 
 std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
   std::list<binpack_segment_t> segments;
-  chunkid_t num_chunks = CONTAINER_SIZE_ / PFS_CHUNK_SIZE_;
+  chunkid_t num_chunks = o_.CONTAINER_SIZE / o_.PFS_CHUNK_SIZE;
   std::list<bbos_obj_t *> packed_objects_list;
   while (num_chunks > 0 && lru_objects_->size() > 0) {
     bbos_obj_t *obj = lru_objects_->front();
@@ -193,9 +193,9 @@ std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
       seg.end_chunk = obj->last_full_chunk;
       obj->cursor = obj->last_full_chunk;
     }
-    obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE_;
-    dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE_;
-    if (obj->dirty_size > OBJECT_DIRTY_THRESHOLD_) {
+    obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
+    dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
+    if (obj->dirty_size > o_.OBJECT_DIRTY_THRESHOLD) {
       packed_objects_list.push_back(obj);
     } else {
       obj->marked_for_packing = false;
@@ -216,20 +216,20 @@ std::list<binpack_segment_t> BuddyStore::get_all_segments() {
   std::list<binpack_segment_t> segments;
   bbos_obj_t *obj = individual_objects_->front();
   individual_objects_->pop_front();
-  chunkid_t num_chunks = obj->dirty_size / PFS_CHUNK_SIZE_;
+  chunkid_t num_chunks = obj->dirty_size / o_.PFS_CHUNK_SIZE;
   while (num_chunks > 0) {
     binpack_segment_t seg;
     seg.obj = obj;
     seg.start_chunk = obj->cursor;
     seg.end_chunk = obj->lst_chunks->size();
-    obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE_;
+    obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
     switch (obj->type) {
       case WRITE_OPTIMIZED:
-        dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE_;
+        dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
         break;
       case READ_OPTIMIZED:
         dirty_individual_size_ -=
-            (seg.end_chunk - seg.start_chunk) * PFS_CHUNK_SIZE_;
+            (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
         break;
     }
     segments.push_back(seg);
@@ -379,7 +379,7 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
       chunk_info_t *chunk = make_chunk(i, 0);
       obj->lst_chunks->push_back(chunk);
       chunk->c_seg = (*it_list);
-      obj->size += PFS_CHUNK_SIZE_;
+      obj->size += o_.PFS_CHUNK_SIZE;
     }
     it_list++;
   }
@@ -388,14 +388,14 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
 
 BuddyStore::BuddyStore() {
   /* Default configs */
-  PFS_CHUNK_SIZE_ = 8388608;            // 8 MB
-  OBJ_CHUNK_SIZE_ = 2097152;            // 2 MB
-  binpacking_threshold_ = 21474836480;  // 20 GB before triggering binpacking
-  binpacking_policy_ = RR_WITH_CURSOR;
-  OBJECT_DIRTY_THRESHOLD_ = 268435456;  // 256 MB
-  CONTAINER_SIZE_ = 10737418240;        // 10 GB
-  snprintf(output_dir_, PATH_LEN, "/tmp");
-  read_phase_ = 0;
+  o_.PFS_CHUNK_SIZE = 8388608;            // 8 MB
+  o_.OBJ_CHUNK_SIZE = 2097152;            // 2 MB
+  o_.binpacking_threshold = 21474836480;  // 20 GB before triggering binpacking
+  o_.binpacking_policy = RR_WITH_CURSOR;
+  o_.OBJECT_DIRTY_THRESHOLD = 268435456;  // 256 MB
+  o_.CONTAINER_SIZE = 10737418240;        // 10 GB
+  o_.output_dir = "/tmp";
+  o_.read_phase = 0;
 
   avg_chunk_response_time_ = 0.0;
   avg_container_response_time_ = 0.0;
@@ -413,28 +413,28 @@ BuddyStore::BuddyStore() {
     if (v != NULL) {
       switch (config_overrides) {
         case 0:
-          PFS_CHUNK_SIZE_ = strtoul(v, NULL, 0);
+          o_.PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
           break;
         case 1:
-          OBJ_CHUNK_SIZE_ = strtoul(v, NULL, 0);
+          o_.OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
           break;
         case 2:
-          binpacking_threshold_ = strtoul(v, NULL, 0);
+          o_.binpacking_threshold = strtoul(v, NULL, 0);
           break;
         case 3:
-          binpacking_policy_ = (binpacking_policy_t)atoi(v);
+          o_.binpacking_policy = (binpacking_policy_t)atoi(v);
           break;
         case 4:
-          OBJECT_DIRTY_THRESHOLD_ = strtoul(v, NULL, 0);
+          o_.OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
           break;
         case 5:
-          CONTAINER_SIZE_ = strtoul(v, NULL, 0);
+          o_.CONTAINER_SIZE = strtoul(v, NULL, 0);
           break;
         case 6:
-          snprintf(output_dir_, PATH_LEN, "%s", v);
+          o_.output_dir = v;
           break;
         case 7:
-          read_phase_ = atoi(v);
+          o_.read_phase = atoi(v);
           break;
       }
     }
@@ -442,7 +442,8 @@ BuddyStore::BuddyStore() {
   }
 
   // output manifest file
-  snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir_);
+  snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt", 
+           o_.output_dir.c_str());
 
   object_map_ = new std::map<std::string, bbos_obj_t *>;
   object_container_map_ =
@@ -454,7 +455,7 @@ BuddyStore::BuddyStore() {
   pthread_mutex_init(&bbos_mutex_, NULL);
 
   containers_built_ = 0;
-  if (read_phase_ == 0) {
+  if (o_.read_phase == 0) {
     BINPACKING_SHUTDOWN_ = false;
     pthread_create(&binpacking_thread_, NULL, BuddyStore::binpacker_main, this);
   } else {
@@ -471,7 +472,8 @@ BuddyStore::BuddyStore() {
     char container_name[PATH_LEN];
     char container_path[PATH_LEN];
     containers >> container_name;
-    snprintf(container_path, PATH_LEN, "%s/%s", output_dir_, container_name);
+    snprintf(container_path, PATH_LEN, "%s/%s", o_.output_dir.c_str(), 
+             container_name);
     printf("Reading container %s\n", container_path);
     build_object_container_map((const char *)container_path);
   }
@@ -483,25 +485,25 @@ BuddyStore::~BuddyStore() {
   assert(!BINPACKING_SHUTDOWN_);
   assert(dirty_bbos_size_ == 0);
   assert(dirty_individual_size_ == 0);
-  if (read_phase_ == 0) {
+  if (o_.read_phase == 0) {
     build_global_manifest(
         output_manifest_);  // important for booting next time and reading
   }
   printf(
-      "============= BBOS MEASUREMENTS (OBJ_CHUNK_SIZE_ = %lu, "
-      "PFS_CHUNK_SIZE_ = %lu) =============\n",
-      OBJ_CHUNK_SIZE_, PFS_CHUNK_SIZE_);
+      "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
+      "o_.PFS_CHUNK_SIZE = %lu) =============\n",
+      o_.OBJ_CHUNK_SIZE, o_.PFS_CHUNK_SIZE);
   printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time_);
   printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
          avg_container_response_time_);
   printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency_);
   printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n",
          avg_binpack_time_);
-  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n", PFS_CHUNK_SIZE_,
+  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n", o_.PFS_CHUNK_SIZE,
          num_chunks_written_);
   printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %" PRIu64 "\n",
-         CONTAINER_SIZE_, num_containers_written_);
-  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", OBJ_CHUNK_SIZE_,
+         o_.CONTAINER_SIZE, num_containers_written_);
+  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", o_.OBJ_CHUNK_SIZE,
          num_appends_);
   printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
   printf("============================================\n");
@@ -562,14 +564,14 @@ static void print_pot(FILE *to, const char *tag, uint64_t val) {
  */
 void BuddyStore::print_config(FILE *fp) {
   fprintf(fp, "BuddyStore::print_config:\n");
-  fprintf(fp, "\tdirectory           = %s\n", output_dir_);
-  print_pot(fp, "pfs-chunk-size", PFS_CHUNK_SIZE_);
-  print_pot(fp, "obj-chunk-size", OBJ_CHUNK_SIZE_);
-  print_pot(fp, "container-size", CONTAINER_SIZE_);
-  print_pot(fp, "binpack-threshold", binpacking_threshold_);
-  print_pot(fp, "obj-dirty-threshold", OBJECT_DIRTY_THRESHOLD_);
-  fprintf(fp, "\tbinpack-policy      = %d\n", binpacking_policy_);
-  fprintf(fp, "\tread-phase          = %d\n", read_phase_);
+  fprintf(fp, "\tdirectory           = %s\n", o_.output_dir.c_str());
+  print_pot(fp, "pfs-chunk-size", o_.PFS_CHUNK_SIZE);
+  print_pot(fp, "obj-chunk-size", o_.OBJ_CHUNK_SIZE);
+  print_pot(fp, "container-size", o_.CONTAINER_SIZE);
+  print_pot(fp, "binpack-threshold", o_.binpacking_threshold);
+  print_pot(fp, "obj-dirty-threshold", o_.OBJECT_DIRTY_THRESHOLD);
+  fprintf(fp, "\tbinpack-policy      = %d\n", o_.binpacking_policy);
+  fprintf(fp, "\tread-phase          = %d\n", o_.read_phase);
 }
 
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
@@ -578,7 +580,7 @@ std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
       if ((BINPACKING_SHUTDOWN_ == true) && (dirty_bbos_size_ > 0)) {
         return all_binpacking_policy();
       }
-      switch (binpacking_policy_) {
+      switch (o_.binpacking_policy) {
         case RR_WITH_CURSOR:
           return rr_with_cursor_binpacking_policy();
         case ALL:
@@ -598,7 +600,7 @@ int BuddyStore::build_container(
     const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
   struct timespec cont_ts_before, cont_ts_after, cnk_ts_before, cnk_ts_after;
   char c_path[PATH_LEN];
-  snprintf(c_path, PATH_LEN, "%s/%s", output_dir_, c_name);
+  snprintf(c_path, PATH_LEN, "%s/%s", o_.output_dir.c_str(), c_name);
   binpack_segment_t b_obj;
   size_t data_written = 0;
   off_t c_offset = 0;
@@ -630,7 +632,7 @@ int BuddyStore::build_container(
     c_offset_stream << std::setfill('0') << std::setw(16) << start_offset;
     fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name, b_obj.start_chunk,
             b_obj.end_chunk, c_offset_stream.str().c_str());
-    start_offset += (PFS_CHUNK_SIZE_ * (b_obj.end_chunk - b_obj.start_chunk));
+    start_offset += (o_.PFS_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
   }
 
   it_bpack = lst_binpack_segments.begin();
@@ -644,7 +646,7 @@ int BuddyStore::build_container(
     }
     while (it_chunks != b_obj.obj->lst_chunks->end() &&
            (*it_chunks)->id < b_obj.end_chunk) {
-      // FIXME: write to DW in PFS_CHUNK_SIZE_ - https://github.com/hpc/libhio
+      // FIXME: write to DW in o_.PFS_CHUNK_SIZE - https://github.com/hpc/libhio
       clock_gettime(CLOCK_REALTIME, &cnk_ts_before);
       data_written =
           fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
@@ -667,10 +669,10 @@ int BuddyStore::build_container(
     container_segment_t *c_seg = new container_segment_t;
     strcpy(c_seg->container_name, c_name);
     c_seg->start_chunk =
-        b_obj.start_chunk * (PFS_CHUNK_SIZE_ / OBJ_CHUNK_SIZE_);
-    c_seg->end_chunk = b_obj.end_chunk * (PFS_CHUNK_SIZE_ / OBJ_CHUNK_SIZE_);
+        b_obj.start_chunk * (o_.PFS_CHUNK_SIZE / o_.OBJ_CHUNK_SIZE);
+    c_seg->end_chunk = b_obj.end_chunk * (o_.PFS_CHUNK_SIZE / o_.OBJ_CHUNK_SIZE);
     c_seg->offset = c_offset;
-    c_offset += (OBJ_CHUNK_SIZE_ * (b_obj.end_chunk - b_obj.start_chunk));
+    c_offset += (o_.OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
     std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
         object_container_map_->find(std::string(b_obj.obj->name));
     if (it_map != object_container_map_->end()) {
@@ -723,10 +725,10 @@ uint32_t BuddyStore::get_individual_obj_count() {
 }
 
 /* Get binpacking threshold */
-size_t BuddyStore::get_binpacking_threshold() { return binpacking_threshold_; }
+size_t BuddyStore::get_binpacking_threshold() { return o_.binpacking_threshold; }
 
 /* Get binpacking policy */
-size_t BuddyStore::get_binpacking_policy() { return binpacking_policy_; }
+size_t BuddyStore::get_binpacking_policy() { return o_.binpacking_policy; }
 
 /* Get name of next container */
 const char *BuddyStore::get_next_container_name(char *path,
@@ -763,7 +765,7 @@ size_t BuddyStore::get_size(const char *name) {
         chunk->size = 0;
         chunk->id = i;
         obj->lst_chunks->push_back(chunk);
-        obj->size += PFS_CHUNK_SIZE_;
+        obj->size += o_.PFS_CHUNK_SIZE;
       }
       it_segs++;
     }
@@ -787,7 +789,7 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   chunk_info_t *last_chunk = obj->lst_chunks->back();
   size_t data_added = 0;
   chunkid_t next_chunk_id = 0;
-  if (obj->lst_chunks->empty() || (last_chunk->size == PFS_CHUNK_SIZE_)) {
+  if (obj->lst_chunks->empty() || (last_chunk->size == o_.PFS_CHUNK_SIZE)) {
     // we need to create a new chunk and append into it.
     if (!obj->lst_chunks->empty()) {
       next_chunk_id = last_chunk->id + 1;
@@ -797,11 +799,11 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
     obj->lst_chunks->push_back(chunk);
     last_chunk = obj->lst_chunks->back();
   }
-  data_added += add_data(last_chunk, buf, OBJ_CHUNK_SIZE_);
-  // NOTE: we always assume data will be received in OBJ_CHUNK_SIZE_
+  data_added += add_data(last_chunk, buf, o_.OBJ_CHUNK_SIZE);
+  // NOTE: we always assume data will be received in o_.OBJ_CHUNK_SIZE
   obj->size += data_added;
   obj->dirty_size += data_added;
-  if (obj->dirty_size > OBJECT_DIRTY_THRESHOLD_ &&
+  if (obj->dirty_size > o_.OBJECT_DIRTY_THRESHOLD &&
       obj->type == WRITE_OPTIMIZED && obj->marked_for_packing == false) {
     // add to head of LRU list for binpacking consideration
     obj->marked_for_packing = true;
@@ -831,7 +833,7 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
 /* Read from a BB object */
 size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   bbos_obj_t *obj = object_map_->find(std::string(name))->second;
-  if (obj == NULL && read_phase_ == 1) {
+  if (obj == NULL && o_.read_phase == 1) {
     obj = populate_object_metadata(name, WRITE_OPTIMIZED);
   } else {
     pthread_mutex_lock(&obj->objmutex);
@@ -845,9 +847,9 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   size_t size_to_be_read = 0;
   size_t offset_to_be_read = 0;
   std::list<chunk_info_t *>::iterator it_chunks = obj->lst_chunks->begin();
-  chunkid_t chunk_num = offset / PFS_CHUNK_SIZE_;
+  chunkid_t chunk_num = offset / o_.PFS_CHUNK_SIZE;
   int chunk_obj_offset =
-      (offset - (chunk_num * PFS_CHUNK_SIZE_)) / OBJ_CHUNK_SIZE_;
+      (offset - (chunk_num * o_.PFS_CHUNK_SIZE)) / o_.OBJ_CHUNK_SIZE;
   for (int i = 0; i < chunk_num; i++) {
     it_chunks++;
   }
@@ -855,24 +857,24 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   if (chunk->buf == NULL) {
     // first fetch data from container into memory
     off_t c_offset = chunk->c_seg->offset;
-    c_offset += (PFS_CHUNK_SIZE_ * (chunk_num - chunk->c_seg->start_chunk));
-    chunk->buf = (void *)malloc(sizeof(char) * PFS_CHUNK_SIZE_);
+    c_offset += (o_.PFS_CHUNK_SIZE * (chunk_num - chunk->c_seg->start_chunk));
+    chunk->buf = (void *)malloc(sizeof(char) * o_.PFS_CHUNK_SIZE);
     assert(chunk->buf != NULL);
     FILE *fp_seg = fopen(chunk->c_seg->container_name, "r");
     int seek_ret = fseek(fp_seg, c_offset, SEEK_SET);
     if (seek_ret != 0) abort();
-    size_t read_size = fread(chunk->buf, PFS_CHUNK_SIZE_, 1, fp_seg);
+    size_t read_size = fread(chunk->buf, o_.PFS_CHUNK_SIZE, 1, fp_seg);
     if (read_size != 1) abort();
     fclose(fp_seg);
   }
-  offset_to_be_read = offset - (PFS_CHUNK_SIZE_ * chunk_num) +
-                      (OBJ_CHUNK_SIZE_ * chunk_obj_offset);
-  size_to_be_read = PFS_CHUNK_SIZE_;
+  offset_to_be_read = offset - (o_.PFS_CHUNK_SIZE * chunk_num) +
+                      (o_.OBJ_CHUNK_SIZE * chunk_obj_offset);
+  size_to_be_read = o_.PFS_CHUNK_SIZE;
   if (len < size_to_be_read) {
     size_to_be_read = len;
   }
   data_read += get_data(chunk, buf, offset_to_be_read, size_to_be_read);
-  if (read_phase_ == 1) {
+  if (o_.read_phase == 1) {
     free(chunk->buf);
     chunk->size = 0;
   }

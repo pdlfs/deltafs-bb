@@ -34,6 +34,7 @@
 
 #include <list>
 #include <map>
+#include <string>
 
 #include "bbos/bbos_api.h"
 
@@ -113,19 +114,25 @@ typedef struct {
 } binpack_segment_t;
 
 /*
+ * BuddyStoreOptions: configuartion options for bbos store
+ */
+struct BuddyStoreOptions {
+  size_t PFS_CHUNK_SIZE;                /* bbos object chunk size */
+  size_t OBJ_CHUNK_SIZE;                /* input append size */
+  size_t binpacking_threshold;          /* start binpack trigger */
+  binpacking_policy_t binpacking_policy;   /* policy to use */
+  size_t OBJECT_DIRTY_THRESHOLD;        /* threshold to start binpack */
+  size_t CONTAINER_SIZE;                /* target backing container size */
+  int read_phase;                       /* XXX: in read phase? */
+  std::string output_dir;               /* output dir for container file */
+};
+
+/*
  * BuddyStore: burst buffer object store main object
  */
 class BuddyStore {
  private:
-  /* config parameters */
-  size_t PFS_CHUNK_SIZE_;               /* bbos object chunk size */
-  size_t OBJ_CHUNK_SIZE_;               /* input append size */
-  size_t binpacking_threshold_;         /* start binpack trigger */
-  binpacking_policy_t binpacking_policy_;  /* policy to use */
-  size_t OBJECT_DIRTY_THRESHOLD_;       /* threshold to start binpack */
-  size_t CONTAINER_SIZE_;               /* target backing container size */
-  int read_phase_;                      /* XXX: in read phase? */
-  char output_dir_[PATH_LEN];           /* output dir for container files */
+  BuddyStoreOptions o_;                 /* config options */
 
   /* object_map is the "directory" of in memory objects we know about */
   std::map<std::string, bbos_obj_t *> *object_map_;  /* name => bbos_obj_t */
