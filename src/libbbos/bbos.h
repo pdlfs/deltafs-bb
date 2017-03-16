@@ -7,6 +7,24 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
+/*
+ * bbos - burst buffer object store
+ *
+ * the bbos moves data between memory, the burst buffer, and the 
+ * backing filesystem (i.e. lustre).   we support 4 main operations:
+ * 
+ *  1. mkobj - create a new bbos object in memory
+ *  2. append - append data to the named bbos object's memory
+ *  3. read - read bbos object data (from memory, loaded in ram on demand)
+ *  4. get_size - report current size of a bbos object
+ *
+ * when the amount of data appended to the bbos objects passes a threshold
+ * we write it to the burst buffer in a container file... data from 
+ * multiple objects is combined into a container file and the BuddyStore
+ * object maintains metadata that provides a mapping from bbos objects
+ * to container files.   data is written to backing store by the binpacking
+ * thread.
+ */
 #pragma once
 
 #include <pthread.h>
