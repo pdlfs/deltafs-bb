@@ -52,6 +52,20 @@ enum bbos_mkobj_flag_t {
  */
 int bbos_init(const char *local, const char *server, bbos_handle_t *bbosp);
 
+/* XXX: EXT mode */
+/**
+ * bbos_init_ext: init bbos client with external mercury and return a handle
+ * @param local local mercury URL (to use with HG_Init())
+ * @param server mercury-style URL of server to connect to
+ * @param vhclass void pointer to hg_class_t
+ * @param vhctx void pointer to hg_context_t
+ * @param bbosp returned handle is put in *bbosp
+ * @return BB_SUCCESS or an error code
+ */
+int bbos_init_ext(const char *local, const char *server,
+                  void *vhclass, void *vhctx, bbos_handle_t *bbosp);
+/* XXX: EXT mode */
+
 /**
  * bbos_finalize: finialize bbos client
  * @param bbos bbos client to finalize
