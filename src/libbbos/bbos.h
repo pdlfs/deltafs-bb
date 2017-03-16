@@ -125,6 +125,8 @@ struct BuddyStoreOptions {
   size_t CONTAINER_SIZE;                /* target backing container size */
   int read_phase;                       /* XXX: in read phase? */
   std::string output_dir;               /* output dir for container file */
+
+  BuddyStoreOptions();                  /* establishes defaults */
 };
 
 /*

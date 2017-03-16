@@ -386,6 +386,20 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
   return obj;
 }
 
+/*
+ * BuddyStoreOptions ctor sets the default values
+ */
+BuddyStoreOptions::BuddyStoreOptions()
+    : PFS_CHUNK_SIZE(8388608),           /* 8MB */
+      OBJ_CHUNK_SIZE(2097152),           /* 2MB */
+      binpacking_threshold(21474836480), /* 20GB before trigger binpack */
+      binpacking_policy(RR_WITH_CURSOR),
+      OBJECT_DIRTY_THRESHOLD(268435456), /* 256MB */
+      CONTAINER_SIZE(10737418240),       /* 10GB */
+      read_phase(0),
+      output_dir("/tmp") {}
+
+
 BuddyStore::BuddyStore() {
   /* Default configs */
   o_.PFS_CHUNK_SIZE = 8388608;            // 8 MB
@@ -442,7 +456,7 @@ BuddyStore::BuddyStore() {
   }
 
   // output manifest file
-  snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt", 
+  snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt",
            o_.output_dir.c_str());
 
   object_map_ = new std::map<std::string, bbos_obj_t *>;
@@ -472,7 +486,7 @@ BuddyStore::BuddyStore() {
     char container_name[PATH_LEN];
     char container_path[PATH_LEN];
     containers >> container_name;
-    snprintf(container_path, PATH_LEN, "%s/%s", o_.output_dir.c_str(), 
+    snprintf(container_path, PATH_LEN, "%s/%s", o_.output_dir.c_str(),
              container_name);
     printf("Reading container %s\n", container_path);
     build_object_container_map((const char *)container_path);
