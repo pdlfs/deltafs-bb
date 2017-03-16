@@ -149,11 +149,11 @@ size_t BuddyStore::get_data(chunk_info_t *chunk, void *buf, off_t offset,
 std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   // FIXME: hardcoded to all objects
-  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
-  while (it_map != object_map->end()) {
+  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map_->begin();
+  while (it_map != object_map_->end()) {
     binpack_segment_t seg;
     seg.obj = (*it_map).second;
-    pthread_mutex_lock(&seg.obj->mutex);
+    pthread_mutex_lock(&seg.obj->objmutex);
     if (seg.obj->type == READ_OPTIMIZED) {
       it_map++;
       continue;
@@ -164,7 +164,7 @@ std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
     seg.obj->dirty_size -=
         ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
     seg.obj->dirty_size -= last_chunk_size;
-    pthread_mutex_unlock(&seg.obj->mutex);
+    pthread_mutex_unlock(&seg.obj->objmutex);
     dirty_bbos_size_ -=
         ((seg.end_chunk - 1) - seg.start_chunk) * PFS_CHUNK_SIZE_;
     dirty_bbos_size_ -= last_chunk_size;
@@ -182,7 +182,7 @@ std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
     bbos_obj_t *obj = lru_objects_->front();
     lru_objects_->pop_front();
     binpack_segment_t seg;
-    pthread_mutex_lock(&obj->mutex);
+    pthread_mutex_lock(&obj->objmutex);
     seg.obj = obj;
     seg.start_chunk = obj->cursor;
     seg.end_chunk = seg.start_chunk;
@@ -200,7 +200,7 @@ std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
     } else {
       obj->marked_for_packing = false;
     }
-    pthread_mutex_unlock(&obj->mutex);
+    pthread_mutex_unlock(&obj->objmutex);
     segments.push_back(seg);
     num_chunks -= (seg.end_chunk - seg.start_chunk);
   }
@@ -343,18 +343,17 @@ bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
                                                 bbos_mkobj_flag_t type) {
   bbos_obj_t *obj = new bbos_obj_t;
   obj->lst_chunks = new std::list<chunk_info_t *>;
-  obj->last_chunk_flushed = 0;
   obj->dirty_size = 0;
   obj->size = 0;
   obj->type = type;
   obj->cursor = 0;
   obj->marked_for_packing = false;
   obj->last_full_chunk = 0;
-  pthread_mutex_init(&obj->mutex, NULL);
-  pthread_mutex_lock(&obj->mutex);
+  pthread_mutex_init(&obj->objmutex, NULL);
+  pthread_mutex_lock(&obj->objmutex);
   sprintf(obj->name, "%s", name);
-  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map->begin();
-  object_map->insert(it_map, std::pair<std::string, bbos_obj_t *>(
+  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map_->begin();
+  object_map_->insert(it_map, std::pair<std::string, bbos_obj_t *>(
                                  std::string(obj->name), obj));
   if (type == READ_OPTIMIZED) {
     individual_objects_->push_back(obj);
@@ -445,7 +444,7 @@ BuddyStore::BuddyStore() {
   // output manifest file
   snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt", output_dir_);
 
-  object_map = new std::map<std::string, bbos_obj_t *>;
+  object_map_ = new std::map<std::string, bbos_obj_t *>;
   object_container_map_ =
       new std::map<std::string, std::list<container_segment_t *> *>;
   dirty_bbos_size_ = 0;
@@ -520,8 +519,8 @@ BuddyStore::~BuddyStore() {
   }
   delete object_container_map_;
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map->begin();
-  while (it_obj_map != object_map->end()) {
+      object_map_->begin();
+  while (it_obj_map != object_map_->end()) {
     assert(it_obj_map->second->dirty_size == 0);
     std::list<chunk_info_t *>::iterator it_chunks =
         it_obj_map->second->lst_chunks->begin();
@@ -529,12 +528,12 @@ BuddyStore::~BuddyStore() {
       delete (*it_chunks);
       it_chunks++;
     }
-    pthread_mutex_destroy(&(it_obj_map->second->mutex));
+    pthread_mutex_destroy(&(it_obj_map->second->objmutex));
     delete it_obj_map->second;
     it_obj_map++;
   }
   pthread_mutex_destroy(&bbos_mutex_);
-  delete object_map;
+  delete object_map_;
   delete lru_objects_;
   delete individual_objects_;
 }
@@ -706,8 +705,8 @@ int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
     return BB_ERROBJ;
   }
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map->find(std::string(name));
-  pthread_mutex_unlock(&(it_obj_map->second->mutex));
+      object_map_->find(std::string(name));
+  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
   return 0;
 }
 
@@ -747,8 +746,8 @@ const char *BuddyStore::get_next_container_name(char *path,
 /* Get size of BB object */
 size_t BuddyStore::get_size(const char *name) {
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map->find(std::string(name));
-  if (it_obj_map == object_map->end()) {
+      object_map_->find(std::string(name));
+  if (it_obj_map == object_map_->end()) {
     std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
         object_container_map_->find(std::string(name));
     assert(it_map != object_container_map_->end());
@@ -768,12 +767,12 @@ size_t BuddyStore::get_size(const char *name) {
       }
       it_segs++;
     }
-    pthread_mutex_unlock(&(obj->mutex));
+    pthread_mutex_unlock(&(obj->objmutex));
     return obj->size;
   } else {
-    pthread_mutex_lock(&(it_obj_map->second->mutex));
+    pthread_mutex_lock(&(it_obj_map->second->objmutex));
   }
-  pthread_mutex_unlock(&(it_obj_map->second->mutex));
+  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
   return it_obj_map->second->size;
 }
 
@@ -782,9 +781,9 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   struct timespec ts_before, ts_after, append_diff_ts;
   clock_gettime(CLOCK_REALTIME, &ts_before);
 
-  bbos_obj_t *obj = object_map->find(std::string(name))->second;
+  bbos_obj_t *obj = object_map_->find(std::string(name))->second;
   assert(obj != NULL);
-  pthread_mutex_lock(&obj->mutex);
+  pthread_mutex_lock(&obj->objmutex);
   chunk_info_t *last_chunk = obj->lst_chunks->back();
   size_t data_added = 0;
   chunkid_t next_chunk_id = 0;
@@ -816,7 +815,7 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
       dirty_individual_size_ += data_added;
       break;
   }
-  pthread_mutex_unlock(&obj->mutex);
+  pthread_mutex_unlock(&obj->objmutex);
 
   clock_gettime(CLOCK_REALTIME, &ts_after);
   num_appends_ += 1;
@@ -831,11 +830,11 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
 
 /* Read from a BB object */
 size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
-  bbos_obj_t *obj = object_map->find(std::string(name))->second;
+  bbos_obj_t *obj = object_map_->find(std::string(name))->second;
   if (obj == NULL && read_phase_ == 1) {
     obj = populate_object_metadata(name, WRITE_OPTIMIZED);
   } else {
-    pthread_mutex_lock(&obj->mutex);
+    pthread_mutex_lock(&obj->objmutex);
   }
 
   assert(obj != NULL);
@@ -877,7 +876,7 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
     free(chunk->buf);
     chunk->size = 0;
   }
-  pthread_mutex_unlock(&obj->mutex);
+  pthread_mutex_unlock(&obj->objmutex);
   return data_read;
 }
 

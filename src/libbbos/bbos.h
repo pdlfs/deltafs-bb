@@ -42,68 +42,111 @@
 namespace pdlfs {
 namespace bb {
 
+/*
+ * chunkid_t: bbos objects are divided into PFS_CHUNK_SIZE_ byte chunks.
+ * chunkid is the chunk block number in the object...  a typical chunk
+ * size is 8MB.
+ */
 typedef uint32_t chunkid_t;
 
-enum binpacking_policy_t { RR_WITH_CURSOR, ALL };
-enum container_flag_t { COMBINED, INDIVIDUAL };
+/*
+ * binpacking_policy_t: the policy that the binpacking thread uses to
+ * find data to pack off to a container in backing store.   
+ */
+enum binpacking_policy_t { 
+  RR_WITH_CURSOR,            /* round robbin with cursor */
+  ALL                        /* take everything (e.g. for shutdown) */
+};
 
+/*
+ * container_flag_t: 
+ */
+enum container_flag_t { 
+  COMBINED, 
+  INDIVIDUAL 
+};
+
+/*
+ * container_segment_t: 
+ */
 typedef struct {
-  char container_name[PATH_LEN];
-  chunkid_t start_chunk;
-  chunkid_t end_chunk;
-  off_t offset;
+  char container_name[PATH_LEN];     /* container filename on backing store */
+  chunkid_t start_chunk;             /* starting chunk number */
+  chunkid_t end_chunk;               /* ending chunk number */
+  off_t offset;                      /* offset in container file */
 } container_segment_t;
 
+/*
+ * chunk_info_t: describes one chunk inside a bbos object
+ */
 typedef struct {
-  chunkid_t id;
-  size_t size;                 // size of chunk in bytes
-  void *buf;                   // buffer pointer for chunk
-  container_segment_t *c_seg;  // container segment holding chunk info
+  chunkid_t id;                      /* chunk's ID number */
+  size_t size;                       /* current size (<= PFS_CHUNK_SIZE_) */
+  void *buf;                         /* malloc'd buf with data */
+  container_segment_t *c_seg;        /* container seg holding chunk info */
 } chunk_info_t;
 
+/*
+ * bbos_obj_t: top-level bbos object structure.
+ * XXX: locking protocol?
+ */
 typedef struct {
-  char name[PATH_LEN];
-  size_t size;
-  bbos_mkobj_flag_t type;
-  std::list<chunk_info_t *> *lst_chunks;  // list of chunks in BBOS object
-  chunkid_t last_chunk_flushed;
-  size_t dirty_size;
-  pthread_mutex_t mutex;
-  chunkid_t cursor;
-  bool marked_for_packing;
-  chunkid_t last_full_chunk;
+  char name[PATH_LEN];               /* name of object */
+  size_t size;                       /* current size of object */
+  bbos_mkobj_flag_t type;            /* read or write optimized */
+  std::list<chunk_info_t *> *lst_chunks;  /* list of chunks for this obj */
+  size_t dirty_size;                 /* #bytes of unflushed appended data */
+  pthread_mutex_t objmutex;          /* XXX */
+  chunkid_t cursor;                  /* chunk block to pack next */
+  bool marked_for_packing;           /* if we are past obj dirty threshold */
+  chunkid_t last_full_chunk;         /* last complete chunk in obj(?) */
 } bbos_obj_t;
 
+/*
+ * binpack_segment_t: the binpack thread builds a list of segments from
+ * bbos objects that it wants to pack into a container...
+ */
 typedef struct {
-  bbos_obj_t *obj;
-  chunkid_t start_chunk;
-  chunkid_t end_chunk;
-  container_segment_t *c_seg;
+  bbos_obj_t *obj;                   /* source object */
+  chunkid_t start_chunk;             /* starting chunk to pack */
+  chunkid_t end_chunk;               /* ending chunk (exclusive?) */
 } binpack_segment_t;
 
+/*
+ * BuddyStore: burst buffer object store main object
+ */
 class BuddyStore {
  private:
-  std::map<std::string, bbos_obj_t *> *object_map;
-  std::map<std::string, std::list<container_segment_t *> *>
-      *object_container_map_;
-  size_t dirty_bbos_size_;
-  size_t dirty_individual_size_;
-  size_t binpacking_threshold_;
-  binpacking_policy_t binpacking_policy_;
-  std::list<bbos_obj_t *> *lru_objects_;
-  std::list<bbos_obj_t *> *individual_objects_;
-  pthread_t binpacking_thread_;
-  size_t OBJECT_DIRTY_THRESHOLD_;
-  size_t CONTAINER_SIZE_;
-  char output_dir_[PATH_LEN];
-  pthread_mutex_t bbos_mutex_;
-  int containers_built_;
-  char output_manifest_[PATH_LEN];
-  int read_phase_;
+  /* config parameters */
+  size_t PFS_CHUNK_SIZE_;               /* bbos object chunk size */
+  size_t OBJ_CHUNK_SIZE_;               /* input append size */
+  size_t binpacking_threshold_;         /* start binpack trigger */
+  binpacking_policy_t binpacking_policy_;  /* policy to use */
+  size_t OBJECT_DIRTY_THRESHOLD_;       /* threshold to start binpack */
+  size_t CONTAINER_SIZE_;               /* target backing container size */
+  int read_phase_;                      /* XXX: in read phase? */
+  char output_dir_[PATH_LEN];           /* output dir for container files */
 
-  size_t PFS_CHUNK_SIZE_;
-  size_t OBJ_CHUNK_SIZE_;
+  /* object_map is the "directory" of in memory objects we know about */
+  std::map<std::string, bbos_obj_t *> *object_map_;  /* name => bbos_obj_t */
+
+  /* object_comtainer_map_ maps object names to all their container segs */
+  std::map<std::string, std::list<container_segment_t *> *>
+      *object_container_map_;                        /* name => list of segs */
+
+  size_t dirty_bbos_size_;              /* XXX total */
+  size_t dirty_individual_size_;        /* XXX total */
+  std::list<bbos_obj_t *> *lru_objects_;          /* LRU list of objects */
+  std::list<bbos_obj_t *> *individual_objects_;   /* READ opt object list */
+  pthread_mutex_t bbos_mutex_;          /* global lock */
+  int containers_built_;                /* # of containers built */
+  char output_manifest_[PATH_LEN];      /* output manifest file name */
+
+  /* binpacking thread hooks */
+  pthread_t binpacking_thread_;
   bool BINPACKING_SHUTDOWN_;
+
+  /* statistics (XXX: locking?) */
   double avg_chunk_response_time_;
   double avg_container_response_time_;
   double avg_append_latency_;
