@@ -152,8 +152,10 @@ class BuddyStore {
   char output_manifest_[PATH_LEN];      /* output manifest file name */
 
   /* binpacking thread hooks */
+  int made_bp_thread_;
+  int bp_running_;
+  int bp_shutdown_;
   pthread_t binpacking_thread_;
-  bool BINPACKING_SHUTDOWN_;
 
   /* statistics (XXX: locking?) */
   double avg_chunk_response_time_;
@@ -192,9 +194,10 @@ class BuddyStore {
 
  public:
   BuddyStore() : dirty_bbos_size_(0), dirty_individual_size_(0),
-    containers_built_(0), BINPACKING_SHUTDOWN_(false),
-    avg_chunk_response_time_(0.0), avg_container_response_time_(0.0),
-    avg_append_latency_(0.0), avg_binpack_time_(0.0), num_chunks_written_(0),
+    containers_built_(0), made_bp_thread_(0), bp_running_(0),
+    bp_shutdown_(0), avg_chunk_response_time_(0.0),
+    avg_container_response_time_(0.0), avg_append_latency_(0.0),
+    avg_binpack_time_(0.0), num_chunks_written_(0),
     num_containers_written_(0), num_appends_(0), num_binpacks_(0) {
 
     object_map_ = new std::map<std::string, bbos_obj_t *>;

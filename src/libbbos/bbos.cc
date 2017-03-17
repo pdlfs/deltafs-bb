@@ -86,14 +86,14 @@ int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
     if (pthread_create(&bs->binpacking_thread_, NULL,
                        BuddyStore::binpacker_main, bs) != 0) {
       fprintf(stderr, "BuddyStore::Open: pthread_create failed\n");
-      abort(); /* XXX: error recover? */
+      return(BB_FAILED);
     }
+    bs->made_bp_thread_ = 1;
   } else {
     /* build the object container map using the MANIFEST */
     std::ifstream containers(bs->output_manifest_);
     if (!containers) {
       printf("Could not read manifest file!\n");
-      abort(); /* XXX: error recovery? */
       delete bs;
       return(BB_FAILED);
     }
@@ -119,20 +119,21 @@ int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
  */
 void *BuddyStore::binpacker_main(void *args) {
   BuddyStore *bs = (BuddyStore *)args;
+  bs->bp_running_ = 1;
   printf("\nStarting binpacking thread...\n");
   do {
     if (bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
       bs->invoke_binpacking(COMBINED);
     }
     sleep(1);
-  } while (!bs->BINPACKING_SHUTDOWN_);
+  } while (!bs->bp_shutdown_);
   /* pack whatever is remaining */
   bs->invoke_binpacking(COMBINED);
   while (bs->get_individual_obj_count() > 0) {
     bs->invoke_binpacking(INDIVIDUAL);
   }
   printf("Shutting down binpacking thread\n");
-  bs->BINPACKING_SHUTDOWN_ = false;
+  bs->bp_running_ = 0;
   pthread_exit(NULL);
 }
 
@@ -433,15 +434,20 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
 }
 
 BuddyStore::~BuddyStore() {
-  BINPACKING_SHUTDOWN_ = true;
-  pthread_join(binpacking_thread_, NULL); /* WAIT HERE */
-  assert(!BINPACKING_SHUTDOWN_);
+
+  if (made_bp_thread_ && bp_running_ && !bp_shutdown_) {
+    bp_shutdown_ = 1;
+    printf("BuddyStore: waiting for binpacker to shutdown\n");
+    pthread_join(binpacking_thread_, NULL); /* WAIT HERE */
+    printf("BuddyStore: binpacker terminated.\n");
+  }
+
   assert(dirty_bbos_size_ == 0);
   assert(dirty_individual_size_ == 0);
   if (o_.read_phase == 0) {
-    build_global_manifest(
-        output_manifest_);  // important for booting next time and reading
+    build_global_manifest(output_manifest_);  // for booting/reading next time
   }
+
   printf(
       "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
       "o_.PFS_CHUNK_SIZE = %lu) =============\n",
@@ -460,6 +466,7 @@ BuddyStore::~BuddyStore() {
          num_appends_);
   printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
   printf("============================================\n");
+
   std::map<std::string, std::list<container_segment_t *> *>::iterator
       it_obj_cont_map = object_container_map_->begin();
   while (it_obj_cont_map != object_container_map_->end()) {
@@ -473,6 +480,7 @@ BuddyStore::~BuddyStore() {
     it_obj_cont_map++;
   }
   delete object_container_map_;
+
   std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
       object_map_->begin();
   while (it_obj_map != object_map_->end()) {
@@ -530,7 +538,7 @@ void BuddyStore::print_config(FILE *fp) {
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
     case COMBINED:
-      if ((BINPACKING_SHUTDOWN_ == true) && (dirty_bbos_size_ > 0)) {
+      if ((bp_shutdown_ == true) && (dirty_bbos_size_ > 0)) {
         return all_binpacking_policy();
       }
       switch (o_.binpacking_policy) {
