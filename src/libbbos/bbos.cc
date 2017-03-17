@@ -28,6 +28,10 @@
 namespace pdlfs {
 namespace bb {
 
+/*
+ * C-style functions (static to this file)
+ */
+
 #ifndef CLOCK_REALTIME /* tmp hack to make it compile on macosx */
 #define CLOCK_REALTIME 0
 static int clock_gettime(int id, struct timespec *tp) {
@@ -52,11 +56,29 @@ static void timespec_diff(struct timespec *start, struct timespec *stop,
 }
 
 /*
- * start of class functions
+ * print_pot: print using power of two (MiB,GiB) if possible
+ */
+static void print_pot(FILE *to, const char *tag, uint64_t val) {
+  uint64_t mb;
+  if (val % (1024 * 1024)) {
+    fprintf(to, "\t%-20.20s= %" PRIu64 "\n", tag, val);
+    return;
+  }
+  mb = val / (1024 * 1024);
+  if (mb < 1024 || (mb % 1024) != 0) {
+    fprintf(to, "\t%-20.20s= %" PRIu64 " MiB\n", tag, mb);
+    return;
+  }
+  fprintf(to, "\t%-20.20s= %" PRIu64 " GiB\n", tag, mb / 1024);
+  return;
+}
+
+/*
+ * class init/teardown related functions
  */
 
 /*
- * BuddyStoreOptions ctor sets the default values
+ * BuddyStoreOptions ctor sets the default store values
  */
 BuddyStoreOptions::BuddyStoreOptions()
     : PFS_CHUNK_SIZE(8388608),           /* 8MB */
@@ -69,7 +91,7 @@ BuddyStoreOptions::BuddyStoreOptions()
       output_dir("/tmp") {}
 
 /*
- * BuddyStore::Open: allocate and init a new buddy store,
+ * BuddyStore::Open: allocate and init a new buddy store (static class fn)
  * ret BB_SUCCESS if it worked.
  */
 int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
@@ -113,6 +135,78 @@ int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
   *bsp = bs;
   return(BB_SUCCESS);
 }
+
+BuddyStore::~BuddyStore() {
+
+  if (made_bp_thread_ && bp_running_ && !bp_shutdown_) {
+    bp_shutdown_ = 1;
+    printf("BuddyStore: waiting for binpacker to shutdown\n");
+    pthread_join(binpacking_thread_, NULL); /* WAIT HERE */
+    printf("BuddyStore: binpacker terminated.\n");
+  }
+
+  assert(dirty_bbos_size_ == 0);
+  assert(dirty_individual_size_ == 0);
+  if (o_.read_phase == 0) {
+    build_global_manifest(output_manifest_);  // for booting/reading next time
+  }
+
+  printf(
+      "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
+      "o_.PFS_CHUNK_SIZE = %lu) =============\n",
+      o_.OBJ_CHUNK_SIZE, o_.PFS_CHUNK_SIZE);
+  printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time_);
+  printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
+         avg_container_response_time_);
+  printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency_);
+  printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n",
+         avg_binpack_time_);
+  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n", o_.PFS_CHUNK_SIZE,
+         num_chunks_written_);
+  printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %" PRIu64 "\n",
+         o_.CONTAINER_SIZE, num_containers_written_);
+  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", o_.OBJ_CHUNK_SIZE,
+         num_appends_);
+  printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
+  printf("============================================\n");
+
+  std::map<std::string, std::list<container_segment_t *> *>::iterator
+      it_obj_cont_map = object_container_map_->begin();
+  while (it_obj_cont_map != object_container_map_->end()) {
+    std::list<container_segment_t *>::iterator it_c_segs =
+        it_obj_cont_map->second->begin();
+    while (it_c_segs != it_obj_cont_map->second->end()) {
+      delete (*it_c_segs);
+      it_c_segs++;
+    }
+    delete it_obj_cont_map->second;
+    it_obj_cont_map++;
+  }
+  delete object_container_map_;
+
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map_->begin();
+  while (it_obj_map != object_map_->end()) {
+    assert(it_obj_map->second->dirty_size == 0);
+    std::list<chunk_info_t *>::iterator it_chunks =
+        it_obj_map->second->lst_chunks->begin();
+    while (it_chunks != it_obj_map->second->lst_chunks->end()) {
+      delete (*it_chunks);
+      it_chunks++;
+    }
+    pthread_mutex_destroy(&(it_obj_map->second->objmutex));
+    delete it_obj_map->second;
+    it_obj_map++;
+  }
+  pthread_mutex_destroy(&bbos_mutex_);
+  delete object_map_;
+  delete lru_objects_;
+  delete individual_objects_;
+}
+
+/*
+ * internal class functions
+ */
 
 /*
  * BuddyStore::binpacker_main: main routine for binpack thread
@@ -433,108 +527,6 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
   return obj;
 }
 
-BuddyStore::~BuddyStore() {
-
-  if (made_bp_thread_ && bp_running_ && !bp_shutdown_) {
-    bp_shutdown_ = 1;
-    printf("BuddyStore: waiting for binpacker to shutdown\n");
-    pthread_join(binpacking_thread_, NULL); /* WAIT HERE */
-    printf("BuddyStore: binpacker terminated.\n");
-  }
-
-  assert(dirty_bbos_size_ == 0);
-  assert(dirty_individual_size_ == 0);
-  if (o_.read_phase == 0) {
-    build_global_manifest(output_manifest_);  // for booting/reading next time
-  }
-
-  printf(
-      "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
-      "o_.PFS_CHUNK_SIZE = %lu) =============\n",
-      o_.OBJ_CHUNK_SIZE, o_.PFS_CHUNK_SIZE);
-  printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time_);
-  printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
-         avg_container_response_time_);
-  printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency_);
-  printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n",
-         avg_binpack_time_);
-  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n", o_.PFS_CHUNK_SIZE,
-         num_chunks_written_);
-  printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %" PRIu64 "\n",
-         o_.CONTAINER_SIZE, num_containers_written_);
-  printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", o_.OBJ_CHUNK_SIZE,
-         num_appends_);
-  printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
-  printf("============================================\n");
-
-  std::map<std::string, std::list<container_segment_t *> *>::iterator
-      it_obj_cont_map = object_container_map_->begin();
-  while (it_obj_cont_map != object_container_map_->end()) {
-    std::list<container_segment_t *>::iterator it_c_segs =
-        it_obj_cont_map->second->begin();
-    while (it_c_segs != it_obj_cont_map->second->end()) {
-      delete (*it_c_segs);
-      it_c_segs++;
-    }
-    delete it_obj_cont_map->second;
-    it_obj_cont_map++;
-  }
-  delete object_container_map_;
-
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->begin();
-  while (it_obj_map != object_map_->end()) {
-    assert(it_obj_map->second->dirty_size == 0);
-    std::list<chunk_info_t *>::iterator it_chunks =
-        it_obj_map->second->lst_chunks->begin();
-    while (it_chunks != it_obj_map->second->lst_chunks->end()) {
-      delete (*it_chunks);
-      it_chunks++;
-    }
-    pthread_mutex_destroy(&(it_obj_map->second->objmutex));
-    delete it_obj_map->second;
-    it_obj_map++;
-  }
-  pthread_mutex_destroy(&bbos_mutex_);
-  delete object_map_;
-  delete lru_objects_;
-  delete individual_objects_;
-}
-
-/*
- * print_pot: print using power of two (MiB,GiB) if possible
- */
-static void print_pot(FILE *to, const char *tag, uint64_t val) {
-  uint64_t mb;
-  if (val % (1024 * 1024)) {
-    fprintf(to, "\t%-20.20s= %" PRIu64 "\n", tag, val);
-    return;
-  }
-  mb = val / (1024 * 1024);
-  if (mb < 1024 || (mb % 1024) != 0) {
-    fprintf(to, "\t%-20.20s= %" PRIu64 " MiB\n", tag, mb);
-    return;
-  }
-  fprintf(to, "\t%-20.20s= %" PRIu64 " GiB\n", tag, mb / 1024);
-  return;
-}
-
-/*
- * BuddyStore::print_config: print config for logs and so user can
- * easily verify the settings we are using
- */
-void BuddyStore::print_config(FILE *fp) {
-  fprintf(fp, "BuddyStore::print_config:\n");
-  fprintf(fp, "\tdirectory           = %s\n", o_.output_dir.c_str());
-  print_pot(fp, "pfs-chunk-size", o_.PFS_CHUNK_SIZE);
-  print_pot(fp, "obj-chunk-size", o_.OBJ_CHUNK_SIZE);
-  print_pot(fp, "container-size", o_.CONTAINER_SIZE);
-  print_pot(fp, "binpack-threshold", o_.binpacking_threshold);
-  print_pot(fp, "obj-dirty-threshold", o_.OBJECT_DIRTY_THRESHOLD);
-  fprintf(fp, "\tbinpack-policy      = %d\n", o_.binpacking_policy);
-  fprintf(fp, "\tread-phase          = %d\n", o_.read_phase);
-}
-
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
     case COMBINED:
@@ -662,17 +654,6 @@ int BuddyStore::build_container(
   return 0;
 }
 
-int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
-  // Initialize an in-memory object
-  if (create_bbos_cache_entry(name, type) == NULL) {
-    return BB_ERROBJ;
-  }
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->find(std::string(name));
-  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
-  return 0;
-}
-
 int BuddyStore::lock_server() { return pthread_mutex_lock(&bbos_mutex_); }
 
 int BuddyStore::unlock_server() { return pthread_mutex_unlock(&bbos_mutex_); }
@@ -706,40 +687,45 @@ const char *BuddyStore::get_next_container_name(char *path,
   return (const char *)path;
 }
 
-/* Get size of BB object */
-size_t BuddyStore::get_size(const char *name) {
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->find(std::string(name));
-  if (it_obj_map == object_map_->end()) {
-    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
-        object_container_map_->find(std::string(name));
-    assert(it_map != object_container_map_->end());
-    bbos_obj_t *obj = create_bbos_cache_entry(
-        name, WRITE_OPTIMIZED);  // FIXME: place correct object type
-    std::list<container_segment_t *> *lst_segments = it_map->second;
-    std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
-    while (it_segs != it_map->second->end()) {
-      container_segment_t *c_seg = (*it_segs);
-      for (int i = c_seg->start_chunk; i < c_seg->end_chunk; i++) {
-        chunk_info_t *chunk = new chunk_info_t;
-        chunk->buf = NULL;
-        chunk->size = 0;
-        chunk->id = i;
-        obj->lst_chunks->push_back(chunk);
-        obj->size += o_.PFS_CHUNK_SIZE;
-      }
-      it_segs++;
-    }
-    pthread_mutex_unlock(&(obj->objmutex));
-    return obj->size;
-  } else {
-    pthread_mutex_lock(&(it_obj_map->second->objmutex));
-  }
-  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
-  return it_obj_map->second->size;
+/*
+ * public class API functions, should be thread safe.
+ */
+
+/*
+ * BuddyStore::print_config: print config for logs and so user can
+ * easily verify the settings we are using.
+ */
+void BuddyStore::print_config(FILE *fp) {
+  fprintf(fp, "BuddyStore::print_config:\n");
+  fprintf(fp, "\tdirectory           = %s\n", o_.output_dir.c_str());
+  print_pot(fp, "pfs-chunk-size", o_.PFS_CHUNK_SIZE);
+  print_pot(fp, "obj-chunk-size", o_.OBJ_CHUNK_SIZE);
+  print_pot(fp, "container-size", o_.CONTAINER_SIZE);
+  print_pot(fp, "binpack-threshold", o_.binpacking_threshold);
+  print_pot(fp, "obj-dirty-threshold", o_.OBJECT_DIRTY_THRESHOLD);
+  fprintf(fp, "\tbinpack-policy      = %d\n", o_.binpacking_policy);
+  fprintf(fp, "\tread-phase          = %d\n", o_.read_phase);
 }
 
-/* Append to a BB object */
+/*
+ * BuddyStore::mkobj: make a new object.  type specifies if it
+ * should be read or write optimized.
+ */
+int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
+  // Initialize an in-memory object
+  if (create_bbos_cache_entry(name, type) == NULL) {
+    return BB_ERROBJ;
+  }
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map_->find(std::string(name));
+  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
+  return 0;
+}
+
+/*
+ * BuddyStore::append: append data to an object.  object must be
+ * present.  currently len must be OBJ_CHUNK_SIZE.
+ */
 size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   struct timespec ts_before, ts_after, append_diff_ts;
   clock_gettime(CLOCK_REALTIME, &ts_before);
@@ -791,7 +777,9 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   return data_added;
 }
 
-/* Read from a BB object */
+/*
+ * BuddyStore::read read data from an object
+ */
 size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   bbos_obj_t *obj = object_map_->find(std::string(name))->second;
   if (obj == NULL && o_.read_phase == 1) {
@@ -841,6 +829,41 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   }
   pthread_mutex_unlock(&obj->objmutex);
   return data_read;
+}
+
+/*
+ * BuddyStore::get_size: get size of an object
+ */
+size_t BuddyStore::get_size(const char *name) {
+  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
+      object_map_->find(std::string(name));
+  if (it_obj_map == object_map_->end()) {
+    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
+        object_container_map_->find(std::string(name));
+    assert(it_map != object_container_map_->end());
+    bbos_obj_t *obj = create_bbos_cache_entry(
+        name, WRITE_OPTIMIZED);  // FIXME: place correct object type
+    std::list<container_segment_t *> *lst_segments = it_map->second;
+    std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
+    while (it_segs != it_map->second->end()) {
+      container_segment_t *c_seg = (*it_segs);
+      for (int i = c_seg->start_chunk; i < c_seg->end_chunk; i++) {
+        chunk_info_t *chunk = new chunk_info_t;
+        chunk->buf = NULL;
+        chunk->size = 0;
+        chunk->id = i;
+        obj->lst_chunks->push_back(chunk);
+        obj->size += o_.PFS_CHUNK_SIZE;
+      }
+      it_segs++;
+    }
+    pthread_mutex_unlock(&(obj->objmutex));
+    return obj->size;
+  } else {
+    pthread_mutex_lock(&(it_obj_map->second->objmutex));
+  }
+  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
+  return it_obj_map->second->size;
 }
 
 }  // namespace bb
