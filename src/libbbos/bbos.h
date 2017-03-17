@@ -134,7 +134,18 @@ struct BuddyStoreOptions {
  */
 class BuddyStore {
  private:
+  /* this block is const after we are open */
   BuddyStoreOptions o_;                 /* config options */
+  char output_manifest_[PATH_LEN];      /* output manifest file name */
+  pthread_t binpacking_thread_;         /* binpacking thread handle */
+  int made_bp_thread_;                  /* non-zero if bp thread launched */
+
+  /* binpacking thread hooks */
+  int bp_running_;                      /* written by bp thread */
+  int bp_shutdown_;                     /* written only at shutdown */
+
+  /* variables below here must be protected with the global lock */
+  pthread_mutex_t bbos_mutex_;          /* global lock */
 
   /* object_map is the "directory" of in memory objects we know about */
   std::map<std::string, bbos_obj_t *> *object_map_;  /* name => bbos_obj_t */
@@ -147,17 +158,9 @@ class BuddyStore {
   size_t dirty_individual_size_;        /* XXX total */
   std::list<bbos_obj_t *> *lru_objects_;          /* LRU list of objects */
   std::list<bbos_obj_t *> *individual_objects_;   /* READ opt object list */
-  pthread_mutex_t bbos_mutex_;          /* global lock */
   int containers_built_;                /* # of containers built */
-  char output_manifest_[PATH_LEN];      /* output manifest file name */
 
-  /* binpacking thread hooks */
-  int made_bp_thread_;
-  int bp_running_;
-  int bp_shutdown_;
-  pthread_t binpacking_thread_;
-
-  /* statistics (XXX: locking?) */
+  /* statistics */
   double avg_chunk_response_time_;
   double avg_container_response_time_;
   double avg_append_latency_;
@@ -193,11 +196,10 @@ class BuddyStore {
   static void *binpacker_main(void *args);
 
  public:
-  BuddyStore() : dirty_bbos_size_(0), dirty_individual_size_(0),
-    containers_built_(0), made_bp_thread_(0), bp_running_(0),
-    bp_shutdown_(0), avg_chunk_response_time_(0.0),
-    avg_container_response_time_(0.0), avg_append_latency_(0.0),
-    avg_binpack_time_(0.0), num_chunks_written_(0),
+  BuddyStore() : made_bp_thread_(0), bp_running_(0), bp_shutdown_(0),
+    dirty_bbos_size_(0), dirty_individual_size_(0), containers_built_(0),
+    avg_chunk_response_time_(0.0), avg_container_response_time_(0.0),
+     avg_append_latency_(0.0), avg_binpack_time_(0.0), num_chunks_written_(0),
     num_containers_written_(0), num_appends_(0), num_binpacks_(0) {
 
     object_map_ = new std::map<std::string, bbos_obj_t *>;
