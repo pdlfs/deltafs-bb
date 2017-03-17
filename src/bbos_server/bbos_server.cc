@@ -787,6 +787,14 @@ static void usage(const char *msg) {
     if (msg) fprintf(stderr, "%s: %s\n", argv0, msg);
     fprintf(stderr, "usage: %s [options] [server-url]\n", argv0);
     fprintf(stderr, "\noptions:\n");
+    fprintf(stderr, "\t-b thold    binpacking threshold\n");
+    fprintf(stderr, "\t-c size     max container size\n");
+    fprintf(stderr, "\t-d dir      output directory\n");
+    fprintf(stderr, "\t-l size     lustre (pfs) chunk size directory\n");
+    fprintf(stderr, "\t-m size     mercury (obj) chunk size directory\n");
+    fprintf(stderr, "\t-p policy   binpacking policy (#)\n");
+    fprintf(stderr, "\t-r readph   read phase\n");
+    fprintf(stderr, "\t-t thold    object dirty threshold\n");
     fprintf(stderr, "\t-w workers  number of worker threads (def=%d)\n",
             DEF_NUM_WORKERS);
     fprintf(stderr, "\n");
@@ -797,23 +805,94 @@ static void usage(const char *msg) {
     exit(1);
 }
 
-
 /*
  * main: main program for server
  */
 int main(int argc, char **argv) {
+  char *ep, *srvr_url;
+  struct pdlfs::bb::BuddyStoreOptions sopts;  /* ctor sets default values */
+  int num_workers, ch;
+  char s_url[256];        /* XXX: for backward compat */
+  const char *port;       /* XXX: for backward compat */
   struct sigaction sa;
   class pdlfs::bb::BuddyStore *store;
   class pdlfs::bb::BuddyServer *server;
-  int ch, num_workers;
-  char *srvr_url;
-  char s_url[256];        /* XXX: for backward compat */
-  const char *port;       /* XXX: for backward compat */
   argv0 = argv[0];
 
-  num_workers = DEF_NUM_WORKERS;
-  while ((ch = getopt(argc, argv, "w:")) != -1) {
+  /*
+   * modify defaults from env (sever url/port/ip handled below)
+   */
+  if ((ep = getenv("BB_Lustre_chunk_size")) != NULL) {
+    sopts.PFS_CHUNK_SIZE = strtoul(ep, NULL, 0);
+    if (sopts.PFS_CHUNK_SIZE < 1) usage("BB: bad lustre chunk size");
+  }
+  if ((ep = getenv("BB_Mercury_transfer_size")) != NULL) {
+    sopts.OBJ_CHUNK_SIZE = strtoul(ep, NULL, 0);
+    if (sopts.OBJ_CHUNK_SIZE < 1) usage("BB: bad merc xfer size");
+  }
+  if ((ep = getenv("BB_Binpacking_threshold")) != NULL) {
+    sopts.binpacking_threshold = strtoul(ep, NULL, 0);
+    if (sopts.binpacking_threshold < 1) usage("BB: bad binpack threshold");
+  }
+  if ((ep = getenv("BB_Binpacking_policy")) != NULL) { /* XXX */
+    sopts.binpacking_policy = (pdlfs::bb::binpacking_policy_t)atoi(ep);
+    if (sopts.binpacking_policy != pdlfs::bb::RR_WITH_CURSOR &&
+        sopts.binpacking_policy != pdlfs::bb::ALL) usage("BB: bad policy");
+  }
+  if ((ep = getenv("BB_Object_dirty_threshold")) != NULL) {
+    sopts.OBJECT_DIRTY_THRESHOLD = strtoul(ep, NULL, 0);
+    if (sopts.OBJECT_DIRTY_THRESHOLD < 1) usage("BB: bad obj dirty threshold");
+  }
+  if ((ep = getenv("BB_Max_container_size")) != NULL) {
+    sopts.CONTAINER_SIZE = strtoul(ep, NULL, 0);
+    if (sopts.CONTAINER_SIZE < 1) usage("BB: bad container size");
+  }
+  if ((ep = getenv("BB_Output_dir")) != NULL) {
+    sopts.output_dir = ep;    /* std::string, so its copied */
+  }
+  if ((ep = getenv("BB_Read_phase")) != NULL) {
+    sopts.read_phase = atoi(ep);
+  }
+
+  if ((ep = getenv("BB_Num_workers")) != NULL) {
+    num_workers = atoi(ep);
+  } else {
+    num_workers = DEF_NUM_WORKERS;
+  }
+
+  while ((ch = getopt(argc, argv, "b:c:d:l:m:p:r:t:w:")) != -1) {
     switch (ch) {
+      case 'b':
+        sopts.binpacking_threshold = strtoul(optarg, NULL, 0);
+        if (sopts.binpacking_threshold < 1) usage("bad binpack threshold");
+        break;
+      case 'c':
+        sopts.CONTAINER_SIZE = strtoul(ep, NULL, 0);
+        if (sopts.CONTAINER_SIZE < 1) usage("bad container size");
+        break;
+      case 'd':
+        sopts.output_dir = optarg;    /* std::string copies string */
+        break;
+      case 'l':
+        sopts.PFS_CHUNK_SIZE = strtoul(ep, NULL, 0);
+        if (sopts.PFS_CHUNK_SIZE < 1) usage("bad lustre chunk size");
+        break;
+      case 'm':
+        sopts.OBJ_CHUNK_SIZE = strtoul(ep, NULL, 0);
+        if (sopts.OBJ_CHUNK_SIZE < 1) usage("bad merc xfer size");
+        break;
+      case 'p':
+        sopts.binpacking_policy = (pdlfs::bb::binpacking_policy_t)atoi(ep);
+        if (sopts.binpacking_policy != pdlfs::bb::RR_WITH_CURSOR &&
+            sopts.binpacking_policy != pdlfs::bb::ALL) usage("bad policy");
+        break;
+      case 'r':
+        sopts.read_phase = atoi(ep);
+        break;
+      case 't':
+        sopts.OBJECT_DIRTY_THRESHOLD = strtoul(ep, NULL, 0);
+        if (sopts.OBJECT_DIRTY_THRESHOLD < 1) usage("bad obj dirty threshold");
+        break;
       case 'w':
         num_workers = atoi(optarg);
         if (num_workers < 1) usage("bad number of workers");
@@ -828,7 +907,7 @@ int main(int argc, char **argv) {
   if (argc > 1)
     usage(NULL);
 
-  if (argc == 1) {
+  if (argc == 1) {   /* command line has priority over env vars */
     srvr_url = argv[0];
   } else {
     srvr_url = getenv("BB_Server");
@@ -860,7 +939,10 @@ int main(int argc, char **argv) {
   }
 
   /* BuddyStore current reads config from environment */
-  store = new pdlfs::bb::BuddyStore();
+  if (pdlfs::bb::BuddyStore::Open(sopts, &store) != BB_SUCCESS) {
+    fprintf(stderr, "BuddyStore::Open: FAILED!\n");
+    exit(1);
+  }
   store->print_config(stdout);
 
   /* allocate blank server */

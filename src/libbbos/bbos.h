@@ -10,16 +10,16 @@
 /*
  * bbos - burst buffer object store
  *
- * the bbos moves data between memory, the burst buffer, and the 
+ * the bbos moves data between memory, the burst buffer, and the
  * backing filesystem (i.e. lustre).   we support 4 main operations:
- * 
+ *
  *  1. mkobj - create a new bbos object in memory
  *  2. append - append data to the named bbos object's memory
  *  3. read - read bbos object data (from memory, loaded in ram on demand)
  *  4. get_size - report current size of a bbos object
  *
  * when the amount of data appended to the bbos objects passes a threshold
- * we write it to the burst buffer in a container file... data from 
+ * we write it to the burst buffer in a container file... data from
  * multiple objects is combined into a container file and the BuddyStore
  * object maintains metadata that provides a mapping from bbos objects
  * to container files.   data is written to backing store by the binpacking
@@ -52,23 +52,23 @@ typedef uint32_t chunkid_t;
 
 /*
  * binpacking_policy_t: the policy that the binpacking thread uses to
- * find data to pack off to a container in backing store.   
+ * find data to pack off to a container in backing store.
  */
-enum binpacking_policy_t { 
+enum binpacking_policy_t {
   RR_WITH_CURSOR,            /* round robbin with cursor */
   ALL                        /* take everything (e.g. for shutdown) */
 };
 
 /*
- * container_flag_t: 
+ * container_flag_t:
  */
-enum container_flag_t { 
-  COMBINED, 
-  INDIVIDUAL 
+enum container_flag_t {
+  COMBINED,
+  INDIVIDUAL
 };
 
 /*
- * container_segment_t: 
+ * container_segment_t:
  */
 typedef struct {
   char container_name[PATH_LEN];     /* container filename on backing store */
@@ -191,9 +191,26 @@ class BuddyStore {
   static void *binpacker_main(void *args);
 
  public:
-  BuddyStore();
+  BuddyStore() : dirty_bbos_size_(0), dirty_individual_size_(0),
+    containers_built_(0), BINPACKING_SHUTDOWN_(false),
+    avg_chunk_response_time_(0.0), avg_container_response_time_(0.0),
+    avg_append_latency_(0.0), avg_binpack_time_(0.0), num_chunks_written_(0),
+    num_containers_written_(0), num_appends_(0), num_binpacks_(0) {
+
+    object_map_ = new std::map<std::string, bbos_obj_t *>;
+    object_container_map_ =
+      new std::map<std::string, std::list<container_segment_t *> *>;
+    lru_objects_ = new std::list<bbos_obj_t *>;
+    individual_objects_ = new std::list<bbos_obj_t *>;
+    if (pthread_mutex_init(&bbos_mutex_, NULL) != 0) {
+      fprintf(stderr, "BuddyStore::BuddyStore(): mutex init failed\n");
+      abort();
+    }
+
+  }
   ~BuddyStore();
 
+  static int Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp);
   void print_config(FILE *fp);
   int mkobj(const char *name, bbos_mkobj_flag_t type = WRITE_OPTIMIZED);
   size_t append(const char *name, void *buf, size_t len);

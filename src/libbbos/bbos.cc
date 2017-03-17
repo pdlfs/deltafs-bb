@@ -28,19 +28,6 @@
 namespace pdlfs {
 namespace bb {
 
-/*XXXCDC: REMOVE BB_Server_port, BB_Server_IP_address, BB_Num_workers */
-
-#define NUM_SERVER_CONFIGS 8  // keep in sync with configs enum and config_names
-static char config_names[NUM_SERVER_CONFIGS][PATH_LEN] = {
-    "BB_Lustre_chunk_size",
-    "BB_Mercury_transfer_size",
-    "BB_Binpacking_threshold",
-    "BB_Binpacking_policy",
-    "BB_Object_dirty_threshold",
-    "BB_Max_container_size",
-    "BB_Output_dir",
-    "BB_Read_phase"};
-
 #ifndef CLOCK_REALTIME /* tmp hack to make it compile on macosx */
 #define CLOCK_REALTIME 0
 static int clock_gettime(int id, struct timespec *tp) {
@@ -67,6 +54,65 @@ static void timespec_diff(struct timespec *start, struct timespec *stop,
 /*
  * start of class functions
  */
+
+/*
+ * BuddyStoreOptions ctor sets the default values
+ */
+BuddyStoreOptions::BuddyStoreOptions()
+    : PFS_CHUNK_SIZE(8388608),           /* 8MB */
+      OBJ_CHUNK_SIZE(2097152),           /* 2MB */
+      binpacking_threshold(21474836480), /* 20GB before trigger binpack */
+      binpacking_policy(RR_WITH_CURSOR),
+      OBJECT_DIRTY_THRESHOLD(268435456), /* 256MB */
+      CONTAINER_SIZE(10737418240),       /* 10GB */
+      read_phase(0),
+      output_dir("/tmp") {}
+
+/*
+ * BuddyStore::Open: allocate and init a new buddy store,
+ * ret BB_SUCCESS if it worked.
+ */
+int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
+  class BuddyStore *bs;
+
+  bs = new BuddyStore;
+  bs->o_ = opts;
+
+  // output manifest file
+  snprintf(bs->output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt",
+           bs->o_.output_dir.c_str());
+
+  if (bs->o_.read_phase == 0) {
+    if (pthread_create(&bs->binpacking_thread_, NULL,
+                       BuddyStore::binpacker_main, bs) != 0) {
+      fprintf(stderr, "BuddyStore::Open: pthread_create failed\n");
+      abort(); /* XXX: error recover? */
+    }
+  } else {
+    /* build the object container map using the MANIFEST */
+    std::ifstream containers(bs->output_manifest_);
+    if (!containers) {
+      printf("Could not read manifest file!\n");
+      abort(); /* XXX: error recovery? */
+      delete bs;
+      return(BB_FAILED);
+    }
+    std::string line;
+    std::string token;
+    std::string bbos_name;
+
+    char container_name[PATH_LEN];
+    char container_path[PATH_LEN];
+    containers >> container_name;
+    snprintf(container_path, PATH_LEN, "%s/%s", bs->o_.output_dir.c_str(),
+             container_name);
+    printf("Reading container %s\n", container_path);
+    bs->build_object_container_map((const char *)container_path);
+  }
+
+  *bsp = bs;
+  return(BB_SUCCESS);
+}
 
 /*
  * BuddyStore::binpacker_main: main routine for binpack thread
@@ -384,113 +430,6 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
     it_list++;
   }
   return obj;
-}
-
-/*
- * BuddyStoreOptions ctor sets the default values
- */
-BuddyStoreOptions::BuddyStoreOptions()
-    : PFS_CHUNK_SIZE(8388608),           /* 8MB */
-      OBJ_CHUNK_SIZE(2097152),           /* 2MB */
-      binpacking_threshold(21474836480), /* 20GB before trigger binpack */
-      binpacking_policy(RR_WITH_CURSOR),
-      OBJECT_DIRTY_THRESHOLD(268435456), /* 256MB */
-      CONTAINER_SIZE(10737418240),       /* 10GB */
-      read_phase(0),
-      output_dir("/tmp") {}
-
-
-BuddyStore::BuddyStore() {
-  /* Default configs */
-  o_.PFS_CHUNK_SIZE = 8388608;            // 8 MB
-  o_.OBJ_CHUNK_SIZE = 2097152;            // 2 MB
-  o_.binpacking_threshold = 21474836480;  // 20 GB before triggering binpacking
-  o_.binpacking_policy = RR_WITH_CURSOR;
-  o_.OBJECT_DIRTY_THRESHOLD = 268435456;  // 256 MB
-  o_.CONTAINER_SIZE = 10737418240;        // 10 GB
-  o_.output_dir = "/tmp";
-  o_.read_phase = 0;
-
-  avg_chunk_response_time_ = 0.0;
-  avg_container_response_time_ = 0.0;
-  avg_append_latency_ = 0.0;
-  avg_binpack_time_ = 0.0;
-  num_chunks_written_ = 0;
-  num_containers_written_ = 0;
-  num_appends_ = 0;
-  num_binpacks_ = 0;
-
-  /* Now scan the environment vars to find out what to override. */
-  int config_overrides = 0;
-  while (config_overrides < NUM_SERVER_CONFIGS) {
-    const char *v = getenv(config_names[config_overrides]);
-    if (v != NULL) {
-      switch (config_overrides) {
-        case 0:
-          o_.PFS_CHUNK_SIZE = strtoul(v, NULL, 0);
-          break;
-        case 1:
-          o_.OBJ_CHUNK_SIZE = strtoul(v, NULL, 0);
-          break;
-        case 2:
-          o_.binpacking_threshold = strtoul(v, NULL, 0);
-          break;
-        case 3:
-          o_.binpacking_policy = (binpacking_policy_t)atoi(v);
-          break;
-        case 4:
-          o_.OBJECT_DIRTY_THRESHOLD = strtoul(v, NULL, 0);
-          break;
-        case 5:
-          o_.CONTAINER_SIZE = strtoul(v, NULL, 0);
-          break;
-        case 6:
-          o_.output_dir = v;
-          break;
-        case 7:
-          o_.read_phase = atoi(v);
-          break;
-      }
-    }
-    config_overrides++;
-  }
-
-  // output manifest file
-  snprintf(output_manifest_, PATH_LEN, "%s/BB_MANIFEST.txt",
-           o_.output_dir.c_str());
-
-  object_map_ = new std::map<std::string, bbos_obj_t *>;
-  object_container_map_ =
-      new std::map<std::string, std::list<container_segment_t *> *>;
-  dirty_bbos_size_ = 0;
-  lru_objects_ = new std::list<bbos_obj_t *>;
-  individual_objects_ = new std::list<bbos_obj_t *>;
-
-  pthread_mutex_init(&bbos_mutex_, NULL);
-
-  containers_built_ = 0;
-  if (o_.read_phase == 0) {
-    BINPACKING_SHUTDOWN_ = false;
-    pthread_create(&binpacking_thread_, NULL, BuddyStore::binpacker_main, this);
-  } else {
-    /* build the object container map using the MANIFEST */
-    std::ifstream containers(output_manifest_);
-    if (!containers) {
-      printf("Could not read manifest file!\n");
-      assert(0);
-    }
-    std::string line;
-    std::string token;
-    std::string bbos_name;
-
-    char container_name[PATH_LEN];
-    char container_path[PATH_LEN];
-    containers >> container_name;
-    snprintf(container_path, PATH_LEN, "%s/%s", o_.output_dir.c_str(),
-             container_name);
-    printf("Reading container %s\n", container_path);
-    build_object_container_map((const char *)container_path);
-  }
 }
 
 BuddyStore::~BuddyStore() {
