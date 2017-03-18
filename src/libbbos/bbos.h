@@ -136,7 +136,12 @@ typedef struct {
 } container_segment_t;
 
 /*
- * chunk_info_t: describes one chunk inside a bbos object
+ * chunk_info_t: describes one chunk inside a bbos object.  data is
+ * added to chunks in OBJ_CHUNK_SIZE byte blocks.  a chunk is considered
+ * full when it has PFS_CHUNK_SIZE bytes in it.   chunk_info_t's can
+ * be allocated with buf == NULL (e.g. when writing after the data has
+ * been flushed out to container, or on reading when the buffer is loaded
+ * on demand).
  */
 typedef struct {
   chunkid_t id;                      /* chunk's ID number */
@@ -147,7 +152,6 @@ typedef struct {
 
 /*
  * bbos_obj_t: top-level in-memory bbos object structure.
- * XXX: locking protocol?
  */
 typedef struct {
   char name[PATH_LEN];               /* name of object */
