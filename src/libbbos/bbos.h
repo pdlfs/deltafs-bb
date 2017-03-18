@@ -24,7 +24,25 @@
  * object maintains metadata that provides a mapping from bbos objects
  * to container files.   data is written to backing store by the binpacking
  * thread.
+ *
+ *
+ * The on-disk format is as follows:
+ *   MANIFEST.txt:           Global manifest file generated at each server,
+ *                           contains a list of containers.
+ * bbos_<number>.con.write:  Write optimized container which is made up
+ *                           of segments of multiple parallel logs.
+ * bbos_<bumber>.con.read:   Read optimized container made up of a
+ *                           single parallel log.
+ *
+ * Each container's first line is the number of parallel logs whose
+ * segments are written to that particular container.
+ *
+ * Subsequent lines are of the form:
+ *   <obj_name>:<start chunk>:<end chunk>:<byte offset in container>
+ *
+ * Following self-describing metadata starts the data of the container.
  */
+
 #pragma once
 
 #include <pthread.h>
