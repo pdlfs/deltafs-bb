@@ -44,6 +44,46 @@ namespace pdlfs {
 namespace bb {
 
 /*
+ * timestat: structure for keeping timing stats.  requires external locking.
+ */
+class timestat {
+ private:
+  uint64_t min_ns_;       /* minimum ns seen */
+  uint64_t max_ns_;       /* maximum ns seen */
+  uint64_t tot_ns_;       /* total ns seen */
+  uint64_t count_;        /* number of data points seen */
+
+ public:
+  timestat() : min_ns_(0), max_ns_(0), tot_ns_(0), count_(0) {};
+
+  void add_ns_data(struct timespec *t0, timespec *t1) {
+    uint64_t t;
+    if (t1->tv_nsec < t0->tv_nsec) {   /* need to borrow? */
+      t = ((t1->tv_sec - t0->tv_sec - 1) * 1000000000) +
+          (t1->tv_nsec + 1000000000 - t0->tv_nsec);
+    } else {
+      t = ((t1->tv_sec - t0->tv_sec) * 1000000000) +
+          (t1->tv_nsec - t0->tv_nsec);
+    }
+    if (count_ == 0) {
+      min_ns_ = max_ns_ = t;
+    } else {
+      if (t < min_ns_) min_ns_ = t;
+      if (t > max_ns_) max_ns_ = t;
+    }
+    tot_ns_ += t;
+    count_++;
+  }
+
+  double avg_ns() {
+    return( (count_) ? (tot_ns_ / (double)count_) : 0.0);
+  }
+  uint64_t min_ns() { return min_ns_; }
+  uint64_t max_ns() { return max_ns_; }
+  uint64_t count()  { return count_; }
+};
+
+/*
  * chunkid_t: bbos objects are divided into PFS_CHUNK_SIZE_ byte chunks.
  * chunkid is the chunk block number in the object...  a typical chunk
  * size is 8MB.
@@ -161,14 +201,10 @@ class BuddyStore {
   int containers_built_;                /* # of containers built */
 
   /* statistics */
-  double avg_chunk_response_time_;
-  double avg_container_response_time_;
-  double avg_append_latency_;
-  double avg_binpack_time_;
-  uint64_t num_chunks_written_;
-  uint64_t num_containers_written_;
-  uint64_t num_appends_;
-  uint64_t num_binpacks_;
+  timestat chunk_fwrite_;               /* fwrite to container */
+  timestat container_build_;            /* building a container */
+  timestat append_stat_;                /* append operation */
+  timestat binpack_stat_;               /* binpack operation */
 
   chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk = 1);
   size_t add_data(chunk_info_t *chunk, void *buf, size_t len);
@@ -197,10 +233,7 @@ class BuddyStore {
 
  public:
   BuddyStore() : made_bp_thread_(0), bp_running_(0), bp_shutdown_(0),
-    dirty_bbos_size_(0), dirty_individual_size_(0), containers_built_(0),
-    avg_chunk_response_time_(0.0), avg_container_response_time_(0.0),
-     avg_append_latency_(0.0), avg_binpack_time_(0.0), num_chunks_written_(0),
-    num_containers_written_(0), num_appends_(0), num_binpacks_(0) {
+    dirty_bbos_size_(0), dirty_individual_size_(0), containers_built_(0) {
 
     object_map_ = new std::map<std::string, bbos_obj_t *>;
     object_container_map_ =

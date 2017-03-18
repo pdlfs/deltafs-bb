@@ -155,19 +155,20 @@ BuddyStore::~BuddyStore() {
       "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
       "o_.PFS_CHUNK_SIZE = %lu) =============\n",
       o_.OBJ_CHUNK_SIZE, o_.PFS_CHUNK_SIZE);
-  printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n", avg_chunk_response_time_);
+  printf("AVERAGE DW CHUNK RESPONSE TIME = %f ns\n",
+         chunk_fwrite_.avg_ns());
   printf("AVERAGE DW CONTAINER RESPONSE TIME = %f ns\n",
-         avg_container_response_time_);
-  printf("AVERAGE APPEND LATENCY = %f ns\n", avg_append_latency_);
+         container_build_.avg_ns());
+  printf("AVERAGE APPEND LATENCY = %f ns\n", append_stat_.avg_ns());
   printf("AVERAGE TIME SPENT IDENTIFYING SEGMENTS TO BINPACK = %f ns\n",
-         avg_binpack_time_);
-  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n", o_.PFS_CHUNK_SIZE,
-         num_chunks_written_);
+         binpack_stat_.avg_ns());
+  printf("NUMBER OF %lu BYTE CHUNKS WRITTEN = %" PRIu64 "\n",
+         o_.PFS_CHUNK_SIZE, chunk_fwrite_.count());
   printf("NUMBER OF %lu BYTE CONTAINERS WRITTEN = %" PRIu64 "\n",
-         o_.CONTAINER_SIZE, num_containers_written_);
+         o_.CONTAINER_SIZE, container_build_.count());
   printf("NUMBER OF %lu BYTE APPENDS = %" PRIu64 "\n", o_.OBJ_CHUNK_SIZE,
-         num_appends_);
-  printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", num_binpacks_);
+         append_stat_.count());
+  printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", binpack_stat_.count());
   printf("============================================\n");
 
   std::map<std::string, std::list<container_segment_t *> *>::iterator
@@ -240,16 +241,10 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
   /* we need to binpack */
   this->lock_server();
   /* identify segments of objects to binpack. */
-  timespec binpack_diff_ts;
   clock_gettime(CLOCK_REALTIME, &ts_before);
   lst_binpack_segments = this->get_objects(type);
   clock_gettime(CLOCK_REALTIME, &ts_after);
-  num_binpacks_ += 1;
-  timespec_diff(&ts_before, &ts_after, &binpack_diff_ts);
-  avg_binpack_time_ *= (num_binpacks_ - 1);
-  avg_binpack_time_ +=
-      ((binpack_diff_ts.tv_sec * 1000000000) + binpack_diff_ts.tv_nsec);
-  avg_binpack_time_ /= num_binpacks_;
+  binpack_stat_.add_ns_data(&ts_before, &ts_after);
   this->unlock_server();
   char path[PATH_LEN];
   if (lst_binpack_segments.size() > 0) {
@@ -558,8 +553,6 @@ int BuddyStore::build_container(
   size_t data_written = 0;
   off_t c_offset = 0;
   off_t start_offset = 0;
-  timespec chunk_diff_ts;
-  timespec container_diff_ts;
   clock_gettime(CLOCK_REALTIME, &cont_ts_before);
   FILE *fp = fopen(c_path, "w+");
   assert(fp != NULL);
@@ -604,12 +597,7 @@ int BuddyStore::build_container(
       data_written =
           fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
       clock_gettime(CLOCK_REALTIME, &cnk_ts_after);
-      num_chunks_written_ += 1;
-      timespec_diff(&cnk_ts_before, &cnk_ts_after, &chunk_diff_ts);
-      avg_chunk_response_time_ *= (num_chunks_written_ - 1);
-      avg_chunk_response_time_ +=
-          ((chunk_diff_ts.tv_sec * 1000000000) + chunk_diff_ts.tv_nsec);
-      avg_chunk_response_time_ /= num_chunks_written_;
+      chunk_fwrite_.add_ns_data(&cnk_ts_before, &cnk_ts_after);
       if (data_written != (*it_chunks)->size) abort();
       free((*it_chunks)->buf);
 
@@ -644,13 +632,7 @@ int BuddyStore::build_container(
   }
   fclose(fp);
   clock_gettime(CLOCK_REALTIME, &cont_ts_after);
-  num_containers_written_ += 1;
-  timespec_diff(&cont_ts_before, &cont_ts_after,
-                &container_diff_ts);
-  avg_container_response_time_ *= (num_containers_written_ - 1);
-  avg_container_response_time_ +=
-      ((container_diff_ts.tv_sec * 1000000000) + container_diff_ts.tv_nsec);
-  avg_container_response_time_ /= num_containers_written_;
+  container_build_.add_ns_data(&cont_ts_before, &cont_ts_after);
   return 0;
 }
 
@@ -727,7 +709,7 @@ int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
  * present.  currently len must be OBJ_CHUNK_SIZE.
  */
 size_t BuddyStore::append(const char *name, void *buf, size_t len) {
-  struct timespec ts_before, ts_after, append_diff_ts;
+  struct timespec ts_before, ts_after;
   clock_gettime(CLOCK_REALTIME, &ts_before);
 
   bbos_obj_t *obj = object_map_->find(std::string(name))->second;
@@ -767,12 +749,7 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   pthread_mutex_unlock(&obj->objmutex);
 
   clock_gettime(CLOCK_REALTIME, &ts_after);
-  num_appends_ += 1;
-  timespec_diff(&ts_before, &ts_after, &append_diff_ts);
-  avg_append_latency_ *= (num_appends_ - 1);
-  avg_append_latency_ +=
-      ((append_diff_ts.tv_sec * 1000000000) + append_diff_ts.tv_nsec);
-  avg_append_latency_ /= num_appends_;
+  append_stat_.add_ns_data(&ts_before, &ts_after);
 
   return data_added;
 }
