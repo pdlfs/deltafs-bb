@@ -146,16 +146,16 @@ typedef struct {
 } chunk_info_t;
 
 /*
- * bbos_obj_t: top-level bbos object structure.
+ * bbos_obj_t: top-level in-memory bbos object structure.
  * XXX: locking protocol?
  */
 typedef struct {
   char name[PATH_LEN];               /* name of object */
-  size_t size;                       /* current size of object */
   bbos_mkobj_flag_t type;            /* read or write optimized */
-  std::list<chunk_info_t *> *lst_chunks;  /* list of chunks for this obj */
+  pthread_mutex_t objmutex;          /* protects fields that can change */
+  size_t size;                       /* current size of object */
   size_t dirty_size;                 /* #bytes of unflushed appended data */
-  pthread_mutex_t objmutex;          /* XXX */
+  std::list<chunk_info_t *> *lst_chunks;  /* list of chunks for this obj */
   chunkid_t cursor;                  /* chunk block to pack next */
   bool marked_for_packing;           /* if we are past obj dirty threshold */
   chunkid_t last_full_chunk;         /* last complete chunk in obj(?) */
@@ -215,7 +215,7 @@ class BuddyStore {
   size_t dirty_bbos_size_;              /* XXX total */
   size_t dirty_individual_size_;        /* XXX total */
   std::list<bbos_obj_t *> *lru_objects_;          /* LRU list of objects */
-  std::list<bbos_obj_t *> *individual_objects_;   /* READ opt object list */
+  std::list<bbos_obj_t *> *individual_objects_;   /* all READ opt objects */
   int containers_built_;                /* # of containers built */
 
   /* statistics */
@@ -223,6 +223,19 @@ class BuddyStore {
   timestat container_build_;            /* building a container */
   timestat append_stat_;                /* append operation */
   timestat binpack_stat_;               /* binpack operation */
+
+  /* find in-memory bbos object, bbos_mutex_ must be held */
+  bbos_obj_t *find_bbos_obj(std::string name) {
+    std::map<std::string, bbos_obj_t *>::iterator i;
+    if (object_map_ == NULL) return(NULL);
+    i = object_map_->find(name);
+    if (i == object_map_->end()) return(NULL);
+    return(i->second);
+  }
+
+  /* create empty new in-memory bbos object, bbos_mutex_ must be held */
+  int create_bbos_obj(const char *name, bbos_mkobj_flag_t type,
+                      bbos_obj_t **newobj);
 
   chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk = 1);
   size_t add_data(chunk_info_t *chunk, void *buf, size_t len);

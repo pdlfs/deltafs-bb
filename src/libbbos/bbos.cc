@@ -658,6 +658,39 @@ const char *BuddyStore::get_next_container_name(char *path,
 }
 
 /*
+ * BuddyStore::create_bbos_obj: create empty new in-memory bbos object
+ * bbos_mutex_ must be held and "name" can't already be in the object_map_.
+ */
+int BuddyStore::create_bbos_obj(const char *name, bbos_mkobj_flag_t type,
+                                bbos_obj_t **newobj) {
+  std::pair<std::map<std::string,bbos_obj_t *>::iterator,bool> r;
+  bbos_obj_t *obj = new bbos_obj_t;
+
+  snprintf(obj->name, sizeof(obj->name), "%s", name);  /*XXX*/
+  obj->type = type;
+  pthread_mutex_init(&obj->objmutex, NULL);
+  obj->size = obj->dirty_size = 0;
+  obj->lst_chunks = new std::list<chunk_info_t *>;
+  obj->cursor = 0;
+  obj->marked_for_packing = false;
+  obj->last_full_chunk = 0;
+
+  r = object_map_->insert(std::pair<std::string, bbos_obj_t *>(obj->name, obj));
+  if (r.second == false) {   /* "name" was already there! */
+    delete obj->lst_chunks;
+    delete obj;
+    return(BB_ERROBJ);
+  }
+  if (type == READ_OPTIMIZED) {
+    individual_objects_->push_back(obj);
+  }
+  if (newobj) *newobj = obj;
+
+  return(BB_SUCCESS);
+}
+
+
+/*
  * public class API functions, should be thread safe.
  */
 
@@ -682,14 +715,19 @@ void BuddyStore::print_config(FILE *fp) {
  * should be read or write optimized.
  */
 int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
-  // Initialize an in-memory object
-  if (create_bbos_cache_entry(name, type) == NULL) {
-    return BB_ERROBJ;
+  bbos_obj_t *obj;
+  int ret;
+
+  pthread_mutex_lock(&bbos_mutex_); /* protect object_map_, etc. */
+  obj = this->find_bbos_obj(name);
+  if (obj) {
+    ret = BB_ERROBJ;         /* object was already present */
+  } else {
+    ret = this->create_bbos_obj(name, type, &obj);
   }
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->find(std::string(name));
-  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
-  return 0;
+  pthread_mutex_unlock(&bbos_mutex_);
+
+  return(ret);
 }
 
 /*
