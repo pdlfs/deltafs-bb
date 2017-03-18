@@ -236,9 +236,8 @@ class BuddyStore {
   /* create empty new in-memory bbos object, bbos_mutex_ must be held */
   int create_bbos_obj(const char *name, bbos_mkobj_flag_t type,
                       bbos_obj_t **newobj);
+  chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk);
 
-  chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk = 1);
-  size_t add_data(chunk_info_t *chunk, void *buf, size_t len);
   size_t get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len);
   std::list<binpack_segment_t> all_binpacking_policy();
   std::list<binpack_segment_t> rr_with_cursor_binpacking_policy();

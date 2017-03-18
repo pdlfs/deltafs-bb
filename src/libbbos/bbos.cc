@@ -85,6 +85,14 @@ BuddyStoreOptions::BuddyStoreOptions()
 int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
   class BuddyStore *bs;
 
+  /* sanity check blocks sizes */
+  if (opts.PFS_CHUNK_SIZE < opts.OBJ_CHUNK_SIZE ||
+      (opts.PFS_CHUNK_SIZE % opts.OBJ_CHUNK_SIZE) != 0) {
+
+    fprintf(stderr, "BuddyStore: PFS size must be a multple of OBJ size\n");
+    return(BB_FAILED);
+  }
+
   bs = new BuddyStore;
   bs->o_ = opts;
 
@@ -240,28 +248,6 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
                           lst_binpack_segments);
     // TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
   }
-}
-
-chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk) {
-  chunk_info_t *new_chunk = new chunk_info_t;
-  new_chunk->id = id;
-  if (malloc_chunk == 1) {
-    new_chunk->buf = (void *)malloc(sizeof(char) * o_.PFS_CHUNK_SIZE);
-  } else {
-    new_chunk->buf = NULL;
-  }
-  if (new_chunk == NULL) {
-    return NULL;
-  }
-  new_chunk->size = 0;
-  return new_chunk;
-}
-
-size_t BuddyStore::add_data(chunk_info_t *chunk, void *buf, size_t len) {
-  // Checking of whether data can fit into this chunk has to be done outside
-  memcpy((void *)((char *)chunk->buf + chunk->size), buf, len);
-  chunk->size += len;
-  return len;
 }
 
 size_t BuddyStore::get_data(chunk_info_t *chunk, void *buf, off_t offset,
@@ -689,6 +675,29 @@ int BuddyStore::create_bbos_obj(const char *name, bbos_mkobj_flag_t type,
   return(BB_SUCCESS);
 }
 
+/*
+ * BuddyStore::make_chunk: alloc a new chunk structure, with or without
+ * its data buffer and return it.
+ */
+chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk_buf) {
+  chunk_info_t *new_chunk;
+
+  new_chunk = new chunk_info_t;
+  new_chunk->id = id;
+  new_chunk->size = 0;
+  if (malloc_chunk_buf) {
+    new_chunk->buf = (void *)malloc(o_.PFS_CHUNK_SIZE);
+    if (!new_chunk->buf) {
+      delete new_chunk;
+      return(NULL);
+    }
+  } else {
+    new_chunk->buf = NULL;
+  }
+
+  return(new_chunk);
+}
+
 
 /*
  * public class API functions, should be thread safe.
@@ -736,48 +745,74 @@ int BuddyStore::mkobj(const char *name, bbos_mkobj_flag_t type) {
  */
 size_t BuddyStore::append(const char *name, void *buf, size_t len) {
   struct timespec ts_before, ts_after;
-  clock_gettime(CLOCK_REALTIME, &ts_before);
+  bbos_obj_t *obj;
+  bool empty, mark_it;
+  chunk_info_t *last_chunk, *new_chunk;
+  chunkid_t next_chunk_id;
 
-  bbos_obj_t *obj = object_map_->find(std::string(name))->second;
-  assert(obj != NULL);
-  pthread_mutex_lock(&obj->objmutex);
-  chunk_info_t *last_chunk = obj->lst_chunks->back();
-  size_t data_added = 0;
-  chunkid_t next_chunk_id = 0;
-  if (obj->lst_chunks->empty() || (last_chunk->size == o_.PFS_CHUNK_SIZE)) {
-    // we need to create a new chunk and append into it.
-    if (!obj->lst_chunks->empty()) {
+  if (len != o_.OBJ_CHUNK_SIZE) {
+    fprintf(stderr, "BuddyStore::append: len != OBJ_CHUNK_SIZE, unsupported\n");
+    return(BB_FAILED);
+  }
+
+  clock_gettime(CLOCK_REALTIME, &ts_before);    /* time append op */
+  pthread_mutex_lock(&bbos_mutex_);
+  obj = find_bbos_obj(name);                    /* protect object_map_ */
+  pthread_mutex_unlock(&bbos_mutex_);
+
+  if (!obj) return(BB_ENOOBJ);                  /* no such object */
+
+  pthread_mutex_lock(&obj->objmutex);           /* changing object */
+  empty = obj->lst_chunks->empty();
+  last_chunk = (empty) ? NULL : obj->lst_chunks->back();
+
+  /* create new chunk if we don't have one or the last one is full */
+  if (!last_chunk || last_chunk->size == o_.PFS_CHUNK_SIZE) {
+    if (!empty) {
       next_chunk_id = last_chunk->id + 1;
       obj->last_full_chunk = last_chunk->id;
+    } else {
+      next_chunk_id = 0;
     }
-    chunk_info_t *chunk = make_chunk(next_chunk_id);
-    obj->lst_chunks->push_back(chunk);
-    last_chunk = obj->lst_chunks->back();
+    new_chunk = make_chunk(next_chunk_id, 1);
+    obj->lst_chunks->push_back(new_chunk);     /* put on end of list */
+    last_chunk = new_chunk;
   }
-  data_added += add_data(last_chunk, buf, o_.OBJ_CHUNK_SIZE);
-  // NOTE: we always assume data will be received in o_.OBJ_CHUNK_SIZE
-  obj->size += data_added;
-  obj->dirty_size += data_added;
-  if (obj->dirty_size > o_.OBJECT_DIRTY_THRESHOLD &&
-      obj->type == WRITE_OPTIMIZED && obj->marked_for_packing == false) {
-    // add to head of LRU list for binpacking consideration
+
+  memcpy((char *)last_chunk->buf + last_chunk->size, buf, len); /*datacopy*/
+  last_chunk->size += len;
+  obj->size += len;
+  obj->dirty_size += len;
+
+  /*
+   * see if we need to mark it for packing... don't mark yet,
+   * recover bbos_mutex_ lock first...
+   */
+  mark_it = (obj->dirty_size > o_.OBJECT_DIRTY_THRESHOLD) &&
+            (obj->type == WRITE_OPTIMIZED) &&
+            (obj->marked_for_packing == false);
+
+  pthread_mutex_unlock(&obj->objmutex);
+
+  /* wrap it up */
+  pthread_mutex_lock(&bbos_mutex_);
+  if (mark_it) {
+    pthread_mutex_lock(&obj->objmutex);
     obj->marked_for_packing = true;
     lru_objects_->push_front(obj);
+    pthread_mutex_unlock(&obj->objmutex);
   }
-  switch (obj->type) {
-    case WRITE_OPTIMIZED:
-      dirty_bbos_size_ += data_added;
-      break;
-    case READ_OPTIMIZED:
-      dirty_individual_size_ += data_added;
-      break;
+  if (obj->type == WRITE_OPTIMIZED) {
+    dirty_bbos_size_ += len;
+  } else if (obj->type == READ_OPTIMIZED) {
+    dirty_individual_size_ += len;
   }
-  pthread_mutex_unlock(&obj->objmutex);
 
   clock_gettime(CLOCK_REALTIME, &ts_after);
   append_stat_.add_ns_data(&ts_before, &ts_after);
+  pthread_mutex_unlock(&bbos_mutex_);
 
-  return data_added;
+  return len;
 }
 
 /*
