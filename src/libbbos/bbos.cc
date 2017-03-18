@@ -188,6 +188,7 @@ BuddyStore::~BuddyStore() {
     std::list<chunk_info_t *>::iterator it_chunks =
         it_obj_map->second->lst_chunks->begin();
     while (it_chunks != it_obj_map->second->lst_chunks->end()) {
+      /* XXX: what about the chunk buffer? */
       delete (*it_chunks);
       it_chunks++;
     }
@@ -574,6 +575,7 @@ int BuddyStore::build_container(
       chunk_fwrite_.add_ns_data(&cnk_ts_before, &cnk_ts_after);
       if (data_written != (*it_chunks)->size) abort();
       free((*it_chunks)->buf);
+      (*it_chunks)->buf = NULL;   /* to be safe */
 
       // FIXME: Ideally we would reduce dirty size after writing to DW,
       //       but here we reduce it when we choose to binpack itself.
