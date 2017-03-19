@@ -444,28 +444,6 @@ int BuddyStore::build_object_container_map(const char *container_name) {
   return (0);
 }
 
-bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
-                                                bbos_mkobj_flag_t type) {
-  bbos_obj_t *obj = new bbos_obj_t;
-  obj->lst_chunks = new std::list<chunk_info_t *>;
-  obj->dirty_size = 0;
-  obj->size = 0;
-  obj->type = type;
-  obj->cursor = 0;
-  obj->marked_for_packing = false;
-  obj->last_full_chunk = 0;
-  pthread_mutex_init(&obj->objmutex, NULL);
-  pthread_mutex_lock(&obj->objmutex);
-  sprintf(obj->name, "%s", name);
-  std::map<std::string, bbos_obj_t *>::iterator it_map = object_map_->begin();
-  object_map_->insert(it_map, std::pair<std::string, bbos_obj_t *>(
-                                 std::string(obj->name), obj));
-  if (type == READ_OPTIMIZED) {
-    individual_objects_->push_back(obj);
-  }
-  return obj;
-}
-
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
     case COMBINED:

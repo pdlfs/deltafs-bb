@@ -249,7 +249,6 @@ class BuddyStore {
   std::list<binpack_segment_t> get_all_segments();
   void build_global_manifest(const char *manifest_name);
   int build_object_container_map(const char *container_name);
-  bbos_obj_t *create_bbos_cache_entry(const char *name, bbos_mkobj_flag_t type);
   void invoke_binpacking(container_flag_t type);
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);
   int build_container(const char *c_name,
