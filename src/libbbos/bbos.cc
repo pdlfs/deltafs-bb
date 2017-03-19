@@ -815,6 +815,8 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
 
 /*
  * BuddyStore::read read data from an object (XXX: should ret ssize_t)
+ * note: only reads within a PFS_CHUNK_SIZE chunk of name and will not
+ * cross chunk boundaries.
  */
 size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   size_t ret;
