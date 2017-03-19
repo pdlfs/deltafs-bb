@@ -241,16 +241,15 @@ class BuddyStore {
   int create_bbos_obj(const char *name, bbos_mkobj_flag_t type,
                       bbos_obj_t **newobj);
   chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk);
+  void populate_object_metadata(bbos_obj_t *obj,
+                                std::list<container_segment_t *> *lst);
 
-  size_t get_data(chunk_info_t *chunk, void *buf, off_t offset, size_t len);
   std::list<binpack_segment_t> all_binpacking_policy();
   std::list<binpack_segment_t> rr_with_cursor_binpacking_policy();
   std::list<binpack_segment_t> get_all_segments();
   void build_global_manifest(const char *manifest_name);
   int build_object_container_map(const char *container_name);
   bbos_obj_t *create_bbos_cache_entry(const char *name, bbos_mkobj_flag_t type);
-  bbos_obj_t *populate_object_metadata(const char *name,
-                                    bbos_mkobj_flag_t type = WRITE_OPTIMIZED);
   void invoke_binpacking(container_flag_t type);
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);
   int build_container(const char *c_name,

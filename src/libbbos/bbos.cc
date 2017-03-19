@@ -251,12 +251,6 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
   }
 }
 
-size_t BuddyStore::get_data(chunk_info_t *chunk, void *buf, off_t offset,
-                            size_t len) {
-  memcpy(buf, (void *)((char *)chunk->buf + offset), len);
-  return len;
-}
-
 std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   // FIXME: hardcoded to all objects
@@ -472,31 +466,6 @@ bbos_obj_t *BuddyStore::create_bbos_cache_entry(const char *name,
   return obj;
 }
 
-bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
-                                                 bbos_mkobj_flag_t type) {
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
-      object_container_map_->find(name);
-  if (it_map == object_container_map_->end()) {
-    // return BB_ENOOBJ;
-    return NULL;
-  }
-  // entry exists. place segment in right position.
-  std::list<container_segment_t *> *lst_segments = it_map->second;
-  std::list<container_segment_t *>::iterator it_list = lst_segments->begin();
-  bbos_obj_t *obj = create_bbos_cache_entry(name, WRITE_OPTIMIZED);
-  chunkid_t i = 0;
-  while (it_list != lst_segments->end()) {
-    for (i = (*it_list)->start_chunk; i < (*it_list)->end_chunk; i++) {
-      chunk_info_t *chunk = make_chunk(i, 0);
-      obj->lst_chunks->push_back(chunk);
-      chunk->ci_seg = (*it_list);
-      obj->size += o_.PFS_CHUNK_SIZE;
-    }
-    it_list++;
-  }
-  return obj;
-}
-
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
     case COMBINED:
@@ -701,7 +670,33 @@ chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk_buf) {
   return(new_chunk);
 }
 
+/*
+ * BuddyStore::populate_object_metadata: for a given named object
+ * we take a freshly created bbos_obj_t object and a list of
+ * container_segment_t's for that name (from object container map)
+ * and populate the obj with a chain of chunk_info_t's (without malloc'd
+ * buffers).  note that each entry in the container segment list
+ * covers a range of chunks.   caller must handle locking
+ * (for a freshly created bbos_obj_t, caller can hold bbos_mutex_).
+ */
+void BuddyStore::populate_object_metadata(bbos_obj_t *obj,
+                 std::list<container_segment_t *> *lst_segments) {
+  std::list<container_segment_t *>::iterator cseg;
+  int lcv;
 
+  for (cseg = lst_segments->begin() ; cseg != lst_segments->end() ; cseg++) {
+    for (lcv = (*cseg)->start_chunk ; lcv < (*cseg)->end_chunk ; lcv++) {
+      chunk_info_t *chunk = new chunk_info_t;
+      chunk->id = lcv;
+      chunk->size = 0;
+      chunk->buf = NULL;
+      chunk->ci_seg = (*cseg);
+      obj->lst_chunks->push_back(chunk);
+      obj->size += o_.PFS_CHUNK_SIZE;
+    }
+  }
+
+}
 /*
  * public class API functions, should be thread safe.
  */
@@ -819,57 +814,112 @@ size_t BuddyStore::append(const char *name, void *buf, size_t len) {
 }
 
 /*
- * BuddyStore::read read data from an object
+ * BuddyStore::read read data from an object (XXX: should ret ssize_t)
  */
 size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
-  bbos_obj_t *obj = object_map_->find(std::string(name))->second;
-  if (obj == NULL && o_.read_phase == 1) {
-    obj = populate_object_metadata(name, WRITE_OPTIMIZED);
-  } else {
-    pthread_mutex_lock(&obj->objmutex);
+  size_t ret;
+  int rv, i;
+  bbos_obj_t *obj;
+  std::map<std::string, std::list<container_segment_t *> *>:: iterator cit;
+  chunkid_t chunk_num;   /* chunk# in log */
+  std::list<chunk_info_t *>::iterator it_chunks;
+  chunk_info_t *chunk;
+  off_t c_offset, buf_offset;
+  FILE *fp_seg;
+
+  pthread_mutex_lock(&bbos_mutex_); /* protect object_map_, etc. */
+  obj = this->find_bbos_obj(name);
+
+  if (obj == NULL) {
+    cit = object_container_map_->find(name);  /* see if container has info */
+    if (cit == object_container_map_->end()) {
+      //ret = BB_ENOOBJ;                /* no such object */
+      ret = 0;                          /* XXX: ssize_t */
+      goto done;
+    }
+
+    rv = this->create_bbos_obj(name, WRITE_OPTIMIZED, &obj);
+    if (rv != BB_SUCCESS) {
+      // ret = BB_FAILED;
+      ret = 0;                          /* XXX: ssize_t */
+      goto done;
+    }
+    populate_object_metadata(obj, cit->second);
   }
 
-  assert(obj != NULL);
+  /*
+   * reduce lock scope to just this object so we don't block other stuff
+   */
+  pthread_mutex_lock(&obj->objmutex);
+  pthread_mutex_unlock(&bbos_mutex_);
+
   if (offset >= obj->size) {
-    return BB_INVALID_READ;
+    ret = 0;
+    goto objdone;
   }
-  size_t data_read = 0;
-  size_t size_to_be_read = 0;
-  size_t offset_to_be_read = 0;
-  std::list<chunk_info_t *>::iterator it_chunks = obj->lst_chunks->begin();
-  chunkid_t chunk_num = offset / o_.PFS_CHUNK_SIZE;
-  int chunk_obj_offset =
-      (offset - (chunk_num * o_.PFS_CHUNK_SIZE)) / o_.OBJ_CHUNK_SIZE;
-  for (int i = 0; i < chunk_num; i++) {
+
+  chunk_num = offset / o_.PFS_CHUNK_SIZE;
+
+  /* linear walk down lst_chunks to find offset's chunk */
+  it_chunks = obj->lst_chunks->begin();
+  for (i = 0 ; i < chunk_num ; i++) {
     it_chunks++;
+    if (it_chunks == obj->lst_chunks->end()) break;
   }
-  chunk_info_t *chunk = *it_chunks;
-  if (chunk->buf == NULL) {
-    // first fetch data from container into memory
-    off_t c_offset = chunk->ci_seg->offset;
+  if (it_chunks == obj->lst_chunks->end()) {
+    ret = 0;
+    goto objdone;
+  }
+  chunk = *it_chunks;
+
+  if (chunk->buf == NULL) {   /* data not resident in memory? */
+    c_offset = chunk->ci_seg->offset;  /* one or more PFS chunks here */
     c_offset += (o_.PFS_CHUNK_SIZE * (chunk_num - chunk->ci_seg->start_chunk));
-    chunk->buf = (void *)malloc(sizeof(char) * o_.PFS_CHUNK_SIZE);
-    assert(chunk->buf != NULL);
-    FILE *fp_seg = fopen(chunk->ci_seg->container_name, "r");
-    int seek_ret = fseek(fp_seg, c_offset, SEEK_SET);
-    if (seek_ret != 0) abort();
-    size_t read_size = fread(chunk->buf, o_.PFS_CHUNK_SIZE, 1, fp_seg);
-    if (read_size != 1) abort();
+    chunk->buf = malloc(o_.PFS_CHUNK_SIZE);
+    if (chunk->buf == NULL) {
+      fprintf(stderr, "BuddyStore::read malloc PFS chunk failed\n");
+      ret = 0;   /* XXX: ssize_t, should be error */
+      goto objdone;
+    }
+    /* XXX: we are doing file I/O holding the obj lock */
+    fp_seg = fopen(chunk->ci_seg->container_name, "r");
+    if (fp_seg == NULL ||
+        fseek(fp_seg, c_offset, SEEK_SET) != 0 ||
+        fread(chunk->buf, o_.PFS_CHUNK_SIZE, 1, fp_seg) != 1) {
+      if (fp_seg) fclose(fp_seg);
+      free(chunk->buf);
+      chunk->buf = NULL;
+      ret = 0;
+      fprintf(stderr, "BuddyStore::read PFS chunk error failed\n");
+      goto objdone;
+    }
     fclose(fp_seg);
+    chunk->size = o_.PFS_CHUNK_SIZE;
+    /* data now present in chunk */
   }
-  offset_to_be_read = offset - (o_.PFS_CHUNK_SIZE * chunk_num) +
-                      (o_.OBJ_CHUNK_SIZE * chunk_obj_offset);
-  size_to_be_read = o_.PFS_CHUNK_SIZE;
-  if (len < size_to_be_read) {
-    size_to_be_read = len;
+
+  buf_offset = offset - (chunk_num * o_.PFS_CHUNK_SIZE);
+  if (buf_offset >= chunk->size) {
+    ret = 0;    /* read past end of buffer */
+  } else {
+    ret = chunk->size - buf_offset;    /* the most we can get */
+    if (len < ret) ret = len;          /* if we asked for less, truncate */
+    memcpy(buf, (char *)chunk->buf + buf_offset, ret);
   }
-  data_read += get_data(chunk, buf, offset_to_be_read, size_to_be_read);
-  if (o_.read_phase == 1) {
+
+  if (o_.read_phase == 1) {    /* XXX: dump data if read? */
     free(chunk->buf);
+    chunk->buf = NULL;
     chunk->size = 0;
   }
+
+objdone:
   pthread_mutex_unlock(&obj->objmutex);
-  return data_read;
+  return(ret);
+
+done:
+  pthread_mutex_unlock(&bbos_mutex_); /* protect object_map_, etc. */
+  return(ret);
 }
 
 /*
@@ -879,9 +929,6 @@ size_t BuddyStore::get_size(const char *name) {
   size_t ret;
   bbos_obj_t *obj;
   std::map<std::string, std::list<container_segment_t *> *>:: iterator cit;
-  std::list<container_segment_t *> *lst_segments;
-  std::list<container_segment_t *>::iterator cseg;
-  int lcv;
 
   pthread_mutex_lock(&bbos_mutex_); /* protect object_map_, etc. */
   obj = this->find_bbos_obj(name);
@@ -897,31 +944,13 @@ size_t BuddyStore::get_size(const char *name) {
   }
 
   /*
-   * create a bbos_obj_t to hold the data.   the container has a list
-   * of container_segment_t's each of which describes a range of the
-   * object's chunks it contains.  this code creates a chain of
-   * chunk_info_t (without malloc'd buffers) off the obj that cover
-   * the range in the container's list...
-   *
-   * we don't need to lock the object since we just created it
-   * and we are still holding the bbos_mutex_ lock.
-   *
+   * create new bbos_obj_t to hold data and populate the chunk list...
    * XXX: hardwired type to WRITE_OPTIMIZED
    */
   ret = this->create_bbos_obj(name, WRITE_OPTIMIZED, &obj);
-  lst_segments = cit->second; /* name's list of segs from obj container map */
-  for (cseg = lst_segments->begin() ; cseg != lst_segments->end() ; cseg++) {
-    for (lcv = (*cseg)->start_chunk ; lcv < (*cseg)->end_chunk ; lcv++) {
-      chunk_info_t *chunk = new chunk_info_t;
-      chunk->id = lcv;
-      chunk->size = 0;
-      chunk->buf = NULL;
-      chunk->ci_seg = (*cseg);
-      obj->lst_chunks->push_back(chunk);
-      obj->size += o_.PFS_CHUNK_SIZE;
-    }
-  }
+  if (ret != BB_SUCCESS) goto done;
 
+  populate_object_metadata(obj, cit->second);
   ret = obj->size;
 
 done:
