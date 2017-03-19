@@ -110,6 +110,10 @@ int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
     bs->made_bp_thread_ = 1;
   } else {
     /* build the object container map using the MANIFEST */
+    /*
+     * XXX: this should read all the files in manifest, not just the
+     * first one...
+     */
     std::ifstream containers(bs->output_manifest_);
     if (!containers) {
       printf("Could not read manifest file!\n");
@@ -436,9 +440,9 @@ int BuddyStore::build_object_container_map(const char *container_name) {
   std::string line;
   std::string token;
   std::string bbos_name;
+  int num_objs;
 
-  container >> containers_built_;  // first line contains number of objects.
-  int num_objs = containers_built_;
+  container >> num_objs;  // first line contains number of objects.
   std::getline(container, line);  // this is the empty line
 
   while (num_objs > 0) {
