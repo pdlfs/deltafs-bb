@@ -147,7 +147,7 @@ typedef struct {
   chunkid_t id;                      /* chunk's ID number */
   size_t size;                       /* current size (<= PFS_CHUNK_SIZE_) */
   void *buf;                         /* malloc'd buf with data */
-  container_segment_t *c_seg;        /* container seg holding chunk info */
+  container_segment_t *ci_seg;       /* container seg holding chunk info */
 } chunk_info_t;
 
 /*

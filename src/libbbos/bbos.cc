@@ -489,7 +489,7 @@ bbos_obj_t *BuddyStore::populate_object_metadata(const char *name,
     for (i = (*it_list)->start_chunk; i < (*it_list)->end_chunk; i++) {
       chunk_info_t *chunk = make_chunk(i, 0);
       obj->lst_chunks->push_back(chunk);
-      chunk->c_seg = (*it_list);
+      chunk->ci_seg = (*it_list);
       obj->size += o_.PFS_CHUNK_SIZE;
     }
     it_list++;
@@ -696,6 +696,7 @@ chunk_info_t *BuddyStore::make_chunk(chunkid_t id, int malloc_chunk_buf) {
   } else {
     new_chunk->buf = NULL;
   }
+  new_chunk->ci_seg = NULL;
 
   return(new_chunk);
 }
@@ -845,11 +846,11 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
   chunk_info_t *chunk = *it_chunks;
   if (chunk->buf == NULL) {
     // first fetch data from container into memory
-    off_t c_offset = chunk->c_seg->offset;
-    c_offset += (o_.PFS_CHUNK_SIZE * (chunk_num - chunk->c_seg->start_chunk));
+    off_t c_offset = chunk->ci_seg->offset;
+    c_offset += (o_.PFS_CHUNK_SIZE * (chunk_num - chunk->ci_seg->start_chunk));
     chunk->buf = (void *)malloc(sizeof(char) * o_.PFS_CHUNK_SIZE);
     assert(chunk->buf != NULL);
-    FILE *fp_seg = fopen(chunk->c_seg->container_name, "r");
+    FILE *fp_seg = fopen(chunk->ci_seg->container_name, "r");
     int seek_ret = fseek(fp_seg, c_offset, SEEK_SET);
     if (seek_ret != 0) abort();
     size_t read_size = fread(chunk->buf, o_.PFS_CHUNK_SIZE, 1, fp_seg);
@@ -875,35 +876,57 @@ size_t BuddyStore::read(const char *name, void *buf, off_t offset, size_t len) {
  * BuddyStore::get_size: get size of an object
  */
 size_t BuddyStore::get_size(const char *name) {
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->find(std::string(name));
-  if (it_obj_map == object_map_->end()) {
-    std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
-        object_container_map_->find(std::string(name));
-    assert(it_map != object_container_map_->end());
-    bbos_obj_t *obj = create_bbos_cache_entry(
-        name, WRITE_OPTIMIZED);  // FIXME: place correct object type
-    std::list<container_segment_t *> *lst_segments = it_map->second;
-    std::list<container_segment_t *>::iterator it_segs = lst_segments->begin();
-    while (it_segs != it_map->second->end()) {
-      container_segment_t *c_seg = (*it_segs);
-      for (int i = c_seg->start_chunk; i < c_seg->end_chunk; i++) {
-        chunk_info_t *chunk = new chunk_info_t;
-        chunk->buf = NULL;
-        chunk->size = 0;
-        chunk->id = i;
-        obj->lst_chunks->push_back(chunk);
-        obj->size += o_.PFS_CHUNK_SIZE;
-      }
-      it_segs++;
-    }
-    pthread_mutex_unlock(&(obj->objmutex));
-    return obj->size;
-  } else {
-    pthread_mutex_lock(&(it_obj_map->second->objmutex));
+  size_t ret;
+  bbos_obj_t *obj;
+  std::map<std::string, std::list<container_segment_t *> *>:: iterator cit;
+  std::list<container_segment_t *> *lst_segments;
+  std::list<container_segment_t *>::iterator cseg;
+  int lcv;
+
+  pthread_mutex_lock(&bbos_mutex_); /* protect object_map_, etc. */
+  obj = this->find_bbos_obj(name);
+  if (obj) {
+    ret = obj->size;                /* info in memory, return it now */
+    goto done;
   }
-  pthread_mutex_unlock(&(it_obj_map->second->objmutex));
-  return it_obj_map->second->size;
+
+  cit = object_container_map_->find(name);  /* see if container has info */
+  if (cit == object_container_map_->end()) {
+    ret = BB_ENOOBJ;                /* no such object */
+    goto done;
+  }
+
+  /*
+   * create a bbos_obj_t to hold the data.   the container has a list
+   * of container_segment_t's each of which describes a range of the
+   * object's chunks it contains.  this code creates a chain of
+   * chunk_info_t (without malloc'd buffers) off the obj that cover
+   * the range in the container's list...
+   *
+   * we don't need to lock the object since we just created it
+   * and we are still holding the bbos_mutex_ lock.
+   *
+   * XXX: hardwired type to WRITE_OPTIMIZED
+   */
+  ret = this->create_bbos_obj(name, WRITE_OPTIMIZED, &obj);
+  lst_segments = cit->second; /* name's list of segs from obj container map */
+  for (cseg = lst_segments->begin() ; cseg != lst_segments->end() ; cseg++) {
+    for (lcv = (*cseg)->start_chunk ; lcv < (*cseg)->end_chunk ; lcv++) {
+      chunk_info_t *chunk = new chunk_info_t;
+      chunk->id = lcv;
+      chunk->size = 0;
+      chunk->buf = NULL;
+      chunk->ci_seg = (*cseg);
+      obj->lst_chunks->push_back(chunk);
+      obj->size += o_.PFS_CHUNK_SIZE;
+    }
+  }
+
+  ret = obj->size;
+
+done:
+  pthread_mutex_unlock(&bbos_mutex_);
+  return(ret);
 }
 
 }  // namespace bb
