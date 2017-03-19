@@ -243,11 +243,11 @@ class BuddyStore {
   chunk_info_t *make_chunk(chunkid_t id, int malloc_chunk);
   void populate_object_metadata(bbos_obj_t *obj,
                                 std::list<container_segment_t *> *lst);
+  void build_global_manifest(const char *manifest_name);
 
   std::list<binpack_segment_t> all_binpacking_policy();
   std::list<binpack_segment_t> rr_with_cursor_binpacking_policy();
   std::list<binpack_segment_t> get_all_segments();
-  void build_global_manifest(const char *manifest_name);
   int build_object_container_map(const char *container_name);
   void invoke_binpacking(container_flag_t type);
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);

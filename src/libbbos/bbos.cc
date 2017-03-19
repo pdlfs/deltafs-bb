@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -132,8 +133,14 @@ int BuddyStore::Open(struct BuddyStoreOptions &opts, class BuddyStore **bsp) {
   return(BB_SUCCESS);
 }
 
+/*
+ * BuddyStore::~BuddyStore: dtor will close down bp thread (waiting
+ * for all unwritten data to flush), build the global manifest file,
+ * print stats, and then free any memory we are holding...
+ */
 BuddyStore::~BuddyStore() {
 
+  /* dispose of the bp thread if it is running */
   if (made_bp_thread_ && bp_running_ && !bp_shutdown_) {
     bp_shutdown_ = 1;
     printf("BuddyStore: waiting for binpacker to shutdown\n");
@@ -141,12 +148,19 @@ BuddyStore::~BuddyStore() {
     printf("BuddyStore: binpacker terminated.\n");
   }
 
-  assert(dirty_bbos_size_ == 0);
-  assert(dirty_individual_size_ == 0);
-  if (o_.read_phase == 0) {
-    build_global_manifest(output_manifest_);  // for booting/reading next time
+  pthread_mutex_lock(&bbos_mutex_);
+
+  if (dirty_bbos_size_ || dirty_individual_size_) {  /* to be safe */
+    fprintf(stderr, "ERROR: bp thread exited with dirty data\n");
+    abort();
   }
 
+  /* for writers, save current manifest for later access ... */
+  if (o_.read_phase == 0) {
+    build_global_manifest(output_manifest_);
+  }
+
+  /* print stats! */
   printf(
       "============= BBOS MEASUREMENTS (o_.OBJ_CHUNK_SIZE = %lu, "
       "o_.PFS_CHUNK_SIZE = %lu) =============\n",
@@ -167,44 +181,112 @@ BuddyStore::~BuddyStore() {
   printf("NUMBER OF BINPACKINGS DONE = %" PRIu64 "\n", binpack_stat_.count());
   printf("============================================\n");
 
-  std::map<std::string, std::list<container_segment_t *> *>::iterator
-      it_obj_cont_map = object_container_map_->begin();
-  while (it_obj_cont_map != object_container_map_->end()) {
-    std::list<container_segment_t *>::iterator it_c_segs =
-        it_obj_cont_map->second->begin();
-    while (it_c_segs != it_obj_cont_map->second->end()) {
-      delete (*it_c_segs);
-      it_c_segs++;
+  /* now start freeing all the data structures */
+
+  /* first zap the object container map */
+  std::map<std::string, std::list<container_segment_t *> *>::iterator cit;
+  std::list<container_segment_t *> *clist;
+  std::list<container_segment_t *>::iterator listit;
+  container_segment_t *cs;
+
+  while (1) {
+    cit = object_container_map_->begin();
+    if (cit == object_container_map_->end()) break;
+    clist = cit->second;
+    while (1) {
+      listit = clist->begin();
+      if (listit == clist->end()) break;
+      cs = *listit;
+      clist->pop_front();
+      delete cs;
     }
-    delete it_obj_cont_map->second;
-    it_obj_cont_map++;
+    delete clist;
+    object_container_map_->erase(cit);
   }
   delete object_container_map_;
+  object_container_map_ = NULL;
 
-  std::map<std::string, bbos_obj_t *>::iterator it_obj_map =
-      object_map_->begin();
-  while (it_obj_map != object_map_->end()) {
-    assert(it_obj_map->second->dirty_size == 0);
-    std::list<chunk_info_t *>::iterator it_chunks =
-        it_obj_map->second->lst_chunks->begin();
-    while (it_chunks != it_obj_map->second->lst_chunks->end()) {
-      /* XXX: what about the chunk buffer? */
-      delete (*it_chunks);
-      it_chunks++;
+  /* now zap the object map */
+  std::map<std::string, bbos_obj_t *>::iterator bit;
+  bbos_obj_t *bobj;
+  std::list<chunk_info_t *> *cnklist;
+  std::list<chunk_info_t *>::iterator cnkit;
+  chunk_info_t *cnk;
+
+  while (1) {
+    bit = object_map_->begin();
+    if (bit == object_map_->end()) break;
+    bobj = bit->second;
+    pthread_mutex_lock(&bobj->objmutex);
+    cnklist = bobj->lst_chunks;
+    while (1) {
+      cnkit = cnklist->begin();
+      if (cnkit == cnklist->end()) break;
+      cnk = *cnkit;
+      cnklist->pop_front();
+      if (cnk->buf) {
+        free(cnk->buf);
+        cnk->buf = NULL;
+      }
+      delete cnk;
     }
-    pthread_mutex_destroy(&(it_obj_map->second->objmutex));
-    delete it_obj_map->second;
-    it_obj_map++;
+    delete cnklist;
+    bobj->lst_chunks = NULL;
+    pthread_mutex_unlock(&bobj->objmutex);
+    pthread_mutex_destroy(&bobj->objmutex);
+    delete bobj;
+    object_map_->erase(bit);
   }
-  pthread_mutex_destroy(&bbos_mutex_);
   delete object_map_;
+  object_map_ = NULL;
+
   delete lru_objects_;
   delete individual_objects_;
+  pthread_mutex_unlock(&bbos_mutex_);
+  pthread_mutex_destroy(&bbos_mutex_);
 }
 
 /*
  * internal class functions
  */
+
+/*
+ * BuddyStore::build_global_manifest: write global manifest file used to
+ * bootstrap BBOS from all the containers and their contents.  we iterate
+ * through the object container map to generate the manifest, but we want
+ * to avoid duplicates.   must be holding bbos_mutex_...
+ */
+void BuddyStore::build_global_manifest(const char *manifest_name) {
+  FILE *fp;
+  std::map<std::string, std::list<container_segment_t *> *>::iterator cit;
+  std::list<container_segment_t *>::iterator listit;
+  std::set<std::string> dupchkset;
+  std::set<std::string>::iterator dupchk;
+
+  if ((fp = fopen(manifest_name, "w+")) == NULL) {
+    fprintf(stderr, "BuddyStore: ERROR: %s - can't write manifest!\n",
+            manifest_name);
+    return;
+  }
+
+  for (cit = object_container_map_->begin() ;
+       cit != object_container_map_->end() ; cit++) {
+    for (listit = cit->second->begin() ;
+         listit != cit->second->end() ; listit++) {
+      dupchk = dupchkset.find((*listit)->container_name);
+      if (dupchk != dupchkset.end()) continue;   /* already seen it */
+      dupchkset.insert((*listit)->container_name);
+      if (fprintf(fp, "%s\n", (*listit)->container_name) !=
+          strlen((*listit)->container_name) + 1) {
+        fprintf(stderr, "BuddyStore: ERROR: %s fprintf error\n", manifest_name);
+      }
+    }
+  }
+
+  if (fclose(fp) != 0) {
+    fprintf(stderr, "BuddyStore: ERROR: %s fclose error\n", manifest_name);
+  }
+}
 
 /*
  * BuddyStore::binpacker_main: main routine for binpack thread
@@ -341,37 +423,6 @@ std::list<binpack_segment_t> BuddyStore::get_all_segments() {
     num_chunks -= (seg.end_chunk - seg.start_chunk);
   }
   return segments;
-}
-
-/*
- * Build the global manifest file used to bootstrap BBOS from all the
- * containers and their contents.
- */
-void BuddyStore::build_global_manifest(const char *manifest_name) {
-  // we have to iterate through the object container map and write it to
-  // a separate file.
-  FILE *fp = fopen(manifest_name, "w+");
-  std::map<std::string, uint32_t> container_map;
-  std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
-      object_container_map_->begin();
-  while (it_map != object_container_map_->end()) {
-    std::list<container_segment_t *>::iterator it_list =
-        it_map->second->begin();
-    while (it_list != it_map->second->end()) {
-      std::map<std::string, uint32_t>::iterator it_c_map =
-          container_map.find(std::string((*it_list)->container_name));
-      if (it_c_map == container_map.end()) {
-        container_map.insert(
-            it_c_map,
-            std::pair<std::string, uint32_t>(
-                std::string((*it_list)->container_name), container_map.size()));
-        fprintf(fp, "%s\n", (*it_list)->container_name);
-      }
-      it_list++;
-    }
-    it_map++;
-  }
-  fclose(fp);
 }
 
 /*
