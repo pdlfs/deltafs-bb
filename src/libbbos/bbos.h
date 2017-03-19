@@ -131,7 +131,7 @@ enum container_flag_t {
 typedef struct {
   char container_name[PATH_LEN];     /* container filename on backing store */
   chunkid_t start_chunk;             /* starting chunk number */
-  chunkid_t end_chunk;               /* ending chunk number */
+  chunkid_t end_chunk;               /* ending chunk number (exclusive) */
   off_t offset;                      /* offset in container file */
 } container_segment_t;
 
