@@ -251,7 +251,7 @@ class BuddyStore {
   int build_object_container_map(const char *container_name);
   void invoke_binpacking(container_flag_t type);
   std::list<binpack_segment_t> get_objects(container_flag_t type = COMBINED);
-  int build_container(const char *c_name,
+  void build_container(const char *c_name,
                       std::list<binpack_segment_t> lst_binpack_segments);
   int lock_server();
   int unlock_server();

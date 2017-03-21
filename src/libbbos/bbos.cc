@@ -7,7 +7,6 @@
  * found in the LICENSE file. See the AUTHORS file for names of contributors.
  */
 
-#include <assert.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -301,13 +300,15 @@ void *BuddyStore::binpacker_main(void *args) {
   printf("\nStarting binpacking thread...\n");
   do {
     if (bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
+      /* Packing of WRITE_OPTIMIZED objs. */
       bs->invoke_binpacking(COMBINED);
     }
     sleep(1);
   } while (!bs->bp_shutdown_);
-  /* pack whatever is remaining */
+  /* pack whatever is remaining using the all_binpacking_policy */
   bs->invoke_binpacking(COMBINED);
   while (bs->get_individual_obj_count() > 0) {
+    /* We form containers of READ_OPTIMIZED objs only at the end. */
     bs->invoke_binpacking(INDIVIDUAL);
   }
   printf("Shutting down binpacking thread\n");
@@ -331,34 +332,32 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
   this->unlock_server();
   char path[PATH_LEN];
   if (lst_binpack_segments.size() > 0) {
-    this->build_container(this->get_next_container_name(path, type),
-                          lst_binpack_segments);
+    const char *container_name = this->get_next_container_name(path, type);
+    this->build_container(container_name, lst_binpack_segments);
     // TODO: stage out DW file to lustre - refer https://github.com/hpc/libhio.
   }
 }
 
+/*
+ * BuddyStore::all_binpacking_policy: binpacking policy that selects all
+ * segments of all objects. This is typically called when shutting down the
+ * BuddyStore for committing all the leftover data to disk.
+ */
 std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
   std::list<binpack_segment_t> segments;
-  // FIXME: hardcoded to all objects
   std::map<std::string, bbos_obj_t *>::iterator it_map = object_map_->begin();
   while (it_map != object_map_->end()) {
     binpack_segment_t seg;
     seg.obj = (*it_map).second;
     pthread_mutex_lock(&seg.obj->objmutex);
     if (seg.obj->type == READ_OPTIMIZED) {
+      pthread_mutex_unlock(&seg.obj->objmutex);
       it_map++;
       continue;
     }
     seg.start_chunk = seg.obj->cursor;
     seg.end_chunk = seg.obj->lst_chunks->size();
-    size_t last_chunk_size = seg.obj->lst_chunks->back()->size;
-    seg.obj->dirty_size -=
-        ((seg.end_chunk - 1) - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-    seg.obj->dirty_size -= last_chunk_size;
     pthread_mutex_unlock(&seg.obj->objmutex);
-    dirty_bbos_size_ -=
-        ((seg.end_chunk - 1) - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-    dirty_bbos_size_ -= last_chunk_size;
     segments.push_back(seg);
     it_map++;
   }
@@ -368,7 +367,9 @@ std::list<binpack_segment_t> BuddyStore::all_binpacking_policy() {
 std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
   std::list<binpack_segment_t> segments;
   chunkid_t num_chunks = o_.CONTAINER_SIZE / o_.PFS_CHUNK_SIZE;
-  std::list<bbos_obj_t *> packed_objects_list;
+  std::list<bbos_obj_t *> packed_objects_list; // aux structure to hold objs
+                                               // large enough to be packed
+                                               // again after one binpacking
   while (num_chunks > 0 && lru_objects_->size() > 0) {
     bbos_obj_t *obj = lru_objects_->front();
     lru_objects_->pop_front();
@@ -384,9 +385,11 @@ std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
       seg.end_chunk = obj->last_full_chunk;
       obj->cursor = obj->last_full_chunk;
     }
-    obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-    dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-    if (obj->dirty_size > o_.OBJECT_DIRTY_THRESHOLD) {
+    if ((obj->dirty_size -
+        ((seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE))
+        > o_.OBJECT_DIRTY_THRESHOLD) {
+      /* Object can be reconsidered for binpacking in next cycle. So, push
+       * it back in packed_objects_list for consideration. */
       packed_objects_list.push_back(obj);
     } else {
       obj->marked_for_packing = false;
@@ -403,6 +406,13 @@ std::list<binpack_segment_t> BuddyStore::rr_with_cursor_binpacking_policy() {
   return segments;
 }
 
+/*
+ * BuddyStore::get_all_segments: This function selects all the segments of a
+ * given object (as against all objects in all_binpacking_policy). Since our
+ * containers are READ_OPTIMIZED and WRITE_OPTIMIZED, and we want to keep
+ * READ_OPTIMIZED objects in independent containers, we use this function for
+ * packing READ_OPTIMIZED objects.
+ */
 std::list<binpack_segment_t> BuddyStore::get_all_segments() {
   std::list<binpack_segment_t> segments;
   bbos_obj_t *obj = individual_objects_->front();
@@ -414,15 +424,8 @@ std::list<binpack_segment_t> BuddyStore::get_all_segments() {
     seg.start_chunk = obj->cursor;
     seg.end_chunk = obj->lst_chunks->size();
     obj->dirty_size -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-    switch (obj->type) {
-      case WRITE_OPTIMIZED:
-        dirty_bbos_size_ -= (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-        break;
-      case READ_OPTIMIZED:
-        dirty_individual_size_ -=
-            (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
-        break;
-    }
+    dirty_individual_size_ -=
+        (seg.end_chunk - seg.start_chunk) * o_.PFS_CHUNK_SIZE;
     segments.push_back(seg);
     num_chunks -= (seg.end_chunk - seg.start_chunk);
   }
@@ -499,9 +502,13 @@ int BuddyStore::build_object_container_map(const char *container_name) {
   return (0);
 }
 
+/*
+ * BuddyStore::get_objects: Identifies the segments of objects to be packed
+ * into containers.
+ */
 std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   switch (type) {
-    case COMBINED:
+    case COMBINED: /* For the chunking and packing of WRITE_OPTIMIZED objs. */
       if ((bp_shutdown_ == true) && (dirty_bbos_size_ > 0)) {
         return all_binpacking_policy();
       }
@@ -513,7 +520,7 @@ std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
       }
       break;
 
-    case INDIVIDUAL:
+    case INDIVIDUAL: /* For the chunking and packing of READ_OPTIMIZED objs. */
       return get_all_segments();
   }
   std::list<binpack_segment_t> segments;
@@ -521,7 +528,7 @@ std::list<binpack_segment_t> BuddyStore::get_objects(container_flag_t type) {
   return segments;
 }
 
-int BuddyStore::build_container(
+void BuddyStore::build_container(
     const char *c_name, std::list<binpack_segment_t> lst_binpack_segments) {
   struct timespec cont_ts_before, cont_ts_after, cnk_ts_before, cnk_ts_after;
   char c_path[PATH_LEN];
@@ -530,22 +537,31 @@ int BuddyStore::build_container(
   size_t data_written = 0;
   off_t c_offset = 0;
   off_t start_offset = 0;
+  int fprintf_ret = 0;
   clock_gettime(CLOCK_REALTIME, &cont_ts_before);
   FILE *fp = fopen(c_path, "w+");
-  assert(fp != NULL);
+  if(fp == NULL) {
+    fprintf(stderr, "Error opening container %s.\n", c_name);
+    abort();
+  }
   std::list<binpack_segment_t>::iterator it_bpack =
       lst_binpack_segments.begin();
-  start_offset += fprintf(fp, "%lu\n", lst_binpack_segments.size());
+  fprintf_ret = fprintf(fp, "%lu\n", lst_binpack_segments.size());
+  if(fprintf_ret < 0) goto err;
+  start_offset += fprintf_ret;
   while (it_bpack != lst_binpack_segments.end()) {
     b_obj = *it_bpack;
     it_bpack++;
-    start_offset += fprintf(fp, "%s:%u:%u:00000000\n", b_obj.obj->name,
-                            b_obj.start_chunk, b_obj.end_chunk);
+    fprintf_ret = fprintf(fp, "%s:%u:%u:00000000\n", b_obj.obj->name,
+                          b_obj.start_chunk, b_obj.end_chunk);
+    if(fprintf_ret < 0) goto err;
+    start_offset += fprintf_ret;
   }
   c_offset = start_offset;
   rewind(fp);  // we need to rewind the fp to the start because now we know
                // correct offsets
-  fprintf(fp, "%lu\n", lst_binpack_segments.size());
+  fprintf_ret = fprintf(fp, "%lu\n", lst_binpack_segments.size());
+  if(fprintf_ret < 0) goto err;
   it_bpack = lst_binpack_segments.begin();
   // rewrite of metadata is required with the correct start offsets of data.
   while (it_bpack != lst_binpack_segments.end()) {
@@ -553,9 +569,11 @@ int BuddyStore::build_container(
     it_bpack++;
     std::stringstream c_offset_stream;
     c_offset_stream << std::setfill('0') << std::setw(16) << start_offset;
-    fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name, b_obj.start_chunk,
-            b_obj.end_chunk, c_offset_stream.str().c_str());
-    start_offset += (o_.PFS_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
+    fprintf_ret = fprintf(fp, "%s:%u:%u:%s\n", b_obj.obj->name,
+                          b_obj.start_chunk, b_obj.end_chunk,
+                          c_offset_stream.str().c_str());
+    if(fprintf_ret < 0) goto err;
+    start_offset += fprintf_ret;
   }
 
   it_bpack = lst_binpack_segments.begin();
@@ -569,15 +587,20 @@ int BuddyStore::build_container(
     }
     while (it_chunks != b_obj.obj->lst_chunks->end() &&
            (*it_chunks)->id < b_obj.end_chunk) {
-      // FIXME: write to DW in o_.PFS_CHUNK_SIZE - https://github.com/hpc/libhio
       clock_gettime(CLOCK_REALTIME, &cnk_ts_before);
       data_written =
           fwrite((*it_chunks)->buf, sizeof(char), (*it_chunks)->size, fp);
       clock_gettime(CLOCK_REALTIME, &cnk_ts_after);
       chunk_fwrite_.add_ns_data(&cnk_ts_before, &cnk_ts_after);
       if (data_written != (*it_chunks)->size) abort();
+      pthread_mutex_lock(&bbos_mutex_);          /* protect object_map_, etc. */
+      dirty_bbos_size_ -= data_written;
+      pthread_mutex_lock(&b_obj.obj->objmutex);   /* changing object */
+      pthread_mutex_unlock(&bbos_mutex_);        /* protect object_map_, etc. */
+      b_obj.obj->dirty_size -= data_written;
       free((*it_chunks)->buf);
-      (*it_chunks)->buf = NULL;   /* to be safe */
+      (*it_chunks)->buf = NULL;                  /* to be safe */
+      pthread_mutex_unlock(&b_obj.obj->objmutex); /* changing object */
 
       // FIXME: Ideally we would reduce dirty size after writing to DW,
       //       but here we reduce it when we choose to binpack itself.
@@ -592,6 +615,7 @@ int BuddyStore::build_container(
     c_seg->end_chunk = b_obj.end_chunk * (o_.PFS_CHUNK_SIZE / o_.OBJ_CHUNK_SIZE);
     c_seg->offset = c_offset;
     c_offset += (o_.OBJ_CHUNK_SIZE * (b_obj.end_chunk - b_obj.start_chunk));
+    pthread_mutex_lock(&bbos_mutex_); /* protect object_map_, etc. */
     std::map<std::string, std::list<container_segment_t *> *>::iterator it_map =
         object_container_map_->find(std::string(b_obj.obj->name));
     if (it_map != object_container_map_->end()) {
@@ -606,12 +630,18 @@ int BuddyStore::build_container(
           it_map, std::pair<std::string, std::list<container_segment_t *> *>(
                       bbos_name, lst_segments));
     }
+    pthread_mutex_unlock(&bbos_mutex_); /* protect object_map_, etc. */
     it_bpack++;
   }
   fclose(fp);
   clock_gettime(CLOCK_REALTIME, &cont_ts_after);
   container_build_.add_ns_data(&cont_ts_before, &cont_ts_after);
-  return 0;
+  return;
+
+err:
+  fprintf(stderr, "Error %d fprintf offset in container %s.\n",
+          fprintf_ret, c_name);
+  abort();
 }
 
 int BuddyStore::lock_server() { return pthread_mutex_lock(&bbos_mutex_); }
@@ -637,10 +667,10 @@ const char *BuddyStore::get_next_container_name(char *path,
                                                 container_flag_t type) {
   // TODO: get container name from a microservice
   switch (type) {
-    case COMBINED:
+    case COMBINED: /* For WRITE_OPTIMIZED objs. */
       snprintf(path, PATH_LEN, "bbos_%d.con.write", containers_built_++);
       break;
-    case INDIVIDUAL:
+    case INDIVIDUAL: /* For READ_OPTIMIZED objs. */
       snprintf(path, PATH_LEN, "bbos_%d.con.read", containers_built_++);
       break;
   }
