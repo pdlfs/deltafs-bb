@@ -39,8 +39,9 @@ add_library (bbos ${bbos-srcs})
 target_link_libraries (bbos mercury)
 # XXX: mercury link target should do this for us
 target_include_directories (bbos PUBLIC ${MERCURY_INCLUDE_DIR}
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>
     $<INSTALL_INTERFACE:include>)
+target_include_directories (bbos BEFORE PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>)
 if (CMAKE_THREAD_LIBS_INIT)
   target_link_libraries (bbos "${CMAKE_THREAD_LIBS_INIT}")
 endif ()
