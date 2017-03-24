@@ -299,7 +299,7 @@ void *BuddyStore::binpacker_main(void *args) {
   bs->bp_running_ = 1;
   printf("\nStarting binpacking thread...\n");
   do {
-    if (bs->get_dirty_size() >= bs->get_binpacking_threshold()) {
+    if (bs->dirty_bbos_size_ >= bs->o_.binpacking_threshold) {
       /* Packing of WRITE_OPTIMIZED objs. */
       bs->invoke_binpacking(COMBINED);
     }
@@ -307,7 +307,7 @@ void *BuddyStore::binpacker_main(void *args) {
   } while (!bs->bp_shutdown_);
   /* pack whatever is remaining using the all_binpacking_policy */
   bs->invoke_binpacking(COMBINED);
-  while (bs->get_individual_obj_count() > 0) {
+  while (bs->individual_objects_->size() > 0) {
     /* We form containers of READ_OPTIMIZED objs only at the end. */
     bs->invoke_binpacking(INDIVIDUAL);
   }
@@ -323,13 +323,13 @@ void BuddyStore::invoke_binpacking(container_flag_t type) {
   struct timespec ts_before, ts_after;
   std::list<binpack_segment_t> lst_binpack_segments;
   /* we need to binpack */
-  this->lock_server();
+  pthread_mutex_lock(&bbos_mutex_);
   /* identify segments of objects to binpack. */
   clock_gettime(CLOCK_REALTIME, &ts_before);
   lst_binpack_segments = this->get_objects(type);
   clock_gettime(CLOCK_REALTIME, &ts_after);
   binpack_stat_.add_ns_data(&ts_before, &ts_after);
-  this->unlock_server();
+  pthread_mutex_unlock(&bbos_mutex_);
   char path[PATH_LEN];
   if (lst_binpack_segments.size() > 0) {
     const char *container_name = this->get_next_container_name(path, type);
@@ -643,24 +643,6 @@ err:
           fprintf_ret, c_name);
   abort();
 }
-
-int BuddyStore::lock_server() { return pthread_mutex_lock(&bbos_mutex_); }
-
-int BuddyStore::unlock_server() { return pthread_mutex_unlock(&bbos_mutex_); }
-
-/* Get total dirty data size */
-size_t BuddyStore::get_dirty_size() { return dirty_bbos_size_; }
-
-/* Get number of individual objects. */
-uint32_t BuddyStore::get_individual_obj_count() {
-  return individual_objects_->size();
-}
-
-/* Get binpacking threshold */
-size_t BuddyStore::get_binpacking_threshold() { return o_.binpacking_threshold; }
-
-/* Get binpacking policy */
-size_t BuddyStore::get_binpacking_policy() { return o_.binpacking_policy; }
 
 /* Get name of next container */
 const char *BuddyStore::get_next_container_name(char *path,
