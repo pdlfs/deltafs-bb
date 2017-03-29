@@ -126,7 +126,16 @@ enum container_flag_t {
 };
 
 /*
- * container_segment_t:
+ * container_segment_t: describes data that has been written to the
+ * container.  the start_chunk and end_chunk numbers are in units of
+ * OBJ_CHUNK_SIZE bytes.  the data in this structure is part of the
+ * container header.  when in memory, we store the data in the
+ * object_container_map_.   for the write path, the object_container_map_
+ * is popluated by the binpacking thread when it writes data cached
+ * in the bbos_obj_t to the backing container.   for the read path
+ * we currently should populate the entire object_container_map_
+ * when the store is loaded (XXX code currently only reads first
+ * container file).
  */
 typedef struct {
   char container_name[PATH_LEN];     /* container filename on backing store */
@@ -138,10 +147,11 @@ typedef struct {
 /*
  * chunk_info_t: describes one chunk inside a bbos object.  data is
  * added to chunks in OBJ_CHUNK_SIZE byte blocks.  a chunk is considered
- * full when it has PFS_CHUNK_SIZE bytes in it.   chunk_info_t's can
- * be allocated with buf == NULL (e.g. when writing after the data has
- * been flushed out to container, or on reading when the buffer is loaded
- * on demand).
+ * full when it has PFS_CHUNK_SIZE bytes in it.   a chunk's id number
+ * is simply it's offset in the object divided by PFS_CHUNK_SIZE.
+ * chunk_info_t's can be allocated with buf == NULL (e.g. when writing
+ * after the data has been flushed out to container, or on reading when
+ * the buffer is loaded on demand).
  */
 typedef struct {
   chunkid_t id;                      /* chunk's ID number */
@@ -151,7 +161,11 @@ typedef struct {
 } chunk_info_t;
 
 /*
- * bbos_obj_t: top-level in-memory bbos object structure.
+ * bbos_obj_t: top-level in-memory bbos object structure.  chunkids
+ * are the offset in the object divided by the PFS_CHUNK_SIZE. the
+ * list of chunks (lst_chunks) is sorted by chunk id (0 first).  currently
+ * the chunk list must be fully populated with all chunks that have been
+ * created (though buffer for each chunk may be set to null).
  */
 typedef struct {
   char name[PATH_LEN];               /* name of object */
@@ -167,7 +181,9 @@ typedef struct {
 
 /*
  * binpack_segment_t: the binpack thread builds a list of segments from
- * bbos objects that it wants to pack into a container...
+ * bbos objects that it wants to pack into a container...  the start
+ * and end chunk ids match the numbers used with bbos_obj_t (i.e.
+ * they are offset/PFS_CHUNK_SIZE).
  */
 typedef struct {
   bbos_obj_t *obj;                   /* source object */
@@ -212,7 +228,12 @@ class BuddyStore {
   /* object_map is the "directory" of in memory objects we know about */
   std::map<std::string, bbos_obj_t *> *object_map_;  /* name => bbos_obj_t */
 
-  /* object_comtainer_map_ maps object names to all their container segs */
+  /*
+   * object_container_map_ maps an object name to a list of the object's
+   * chunks in a container (using OBJ_CHUNK_SIZE sized chunks).  the list
+   * is sorted by chunk id and currently must be fully populated with an
+   * entry for each chunk present in the container.
+   */
   std::map<std::string, std::list<container_segment_t *> *>
       *object_container_map_;                        /* name => list of segs */
 
