@@ -350,7 +350,7 @@ void BuddyServer::wait() {
  * (static class fn)
  */
 hg_return_t BuddyServer::generic_handler(hg_handle_t handle) {
-  struct hg_info *hgi;
+  const struct hg_info *hgi;
   class BuddyServer *srvr;
   struct thread_args *myta;
   hg_thread_func_t nextfunc;
@@ -452,7 +452,7 @@ HG_THREAD_RETURN_TYPE BuddyServer::mkobj_handler(void *args) {
  */
 HG_THREAD_RETURN_TYPE BuddyServer::append_handler(void *args) {
   struct thread_args *ta;
-  struct hg_info *hgi;
+  const struct hg_info *hgi;
   struct append_state *as;
   bbos_append_out_t out;
   hg_return_t hgret;
@@ -572,7 +572,7 @@ hg_return_t BuddyServer::append_finish(const struct hg_cb_info *info) {
  */
 HG_THREAD_RETURN_TYPE BuddyServer::read_handler(void *args) {
   struct thread_args *ta;
-  struct hg_info *hgi;
+  const struct hg_info *hgi;
   struct read_state *rs;
   size_t got;    /* XXX: from BuddyStore, ssize_t? */
   hg_size_t hggot;
